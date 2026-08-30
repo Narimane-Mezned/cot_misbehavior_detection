@@ -1,0 +1,31 @@
+data:
+  raw_dir: data/raw
+
+model:
+  input_dim: 8
+  d_model: 128
+  nhead: 8
+  num_layers: 3
+  dim_feedforward: 256
+  dropout: 0.1
+
+training:
+  seed: 42
+  batch_size: 32
+  seq_len: 10
+  val_fraction: 0.15
+  epochs: 100
+  lr: 0.0003
+  huber_delta: 1.0
+  grad_clip_norm: 1.0
+  early_stopping_patience: 10
+  lr_scheduler_patience: 5
+  lr_scheduler_factor: 0.5
+
+scoring:
+  topk: 3
+  threshold_percentile: 99.0
+
+paths:
+  checkpoint_dir: outputs/checkpoints
+  log_dir: outputs/logs

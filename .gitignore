@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv*/
+*.egg-info/
+build/
+dist/
+
+# Data (large, never commit)
+data/raw/
+data/processed/
+*.zip
+*.npz
+*.pkl
+
+# Outputs (regenerated, not source)
+outputs/checkpoints/
+outputs/logs/
+outputs/results/
+*.pt
+*.pth
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Env
+.env

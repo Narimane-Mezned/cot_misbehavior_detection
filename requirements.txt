@@ -1,0 +1,19 @@
+# data acquisition & pipeline 
+gdown>=5.2.0
+tqdm>=4.66.0
+numpy>=1.26.0
+pillow>=10.0.0
+opencv-python>=4.9.0
+
+# model, training 
+torch>=2.2.0
+pyyaml>=6.0.1
+scikit-learn>=1.4.0
+
+# evaluation 
+pandas>=2.2.0
+matplotlib>=3.8.0
+
+# adversarial ML attacks (ART family) 
+adversarial-robustness-toolbox>=1.17.0
+
