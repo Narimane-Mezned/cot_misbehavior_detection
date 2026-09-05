@@ -13,6 +13,72 @@ sys.path.insert(0, str(REPO_ROOT))
 logger = logging.getLogger(__name__)
 
 
+def run_membership_inference_v2(
+    pampos_target,
+    member_windows: List[np.ndarray],
+    nonmember_windows: List[np.ndarray],
+) -> Dict:
+    rng = np.random.default_rng(42)
+
+    member_scores = np.array([pampos_target.raw_score(w) for w in member_windows])
+    nonmember_scores = np.array([pampos_target.raw_score(w) for w in nonmember_windows])
+
+    n_member_calib = len(member_scores) // 2
+    n_nonmember_calib = len(nonmember_scores) // 2
+
+    member_idx = rng.permutation(len(member_scores))
+    nonmember_idx = rng.permutation(len(nonmember_scores))
+
+    calib_member = member_scores[member_idx[:n_member_calib]]
+    eval_member = member_scores[member_idx[n_member_calib:]]
+    calib_nonmember = nonmember_scores[nonmember_idx[:n_nonmember_calib]]
+    eval_nonmember = nonmember_scores[nonmember_idx[n_nonmember_calib:]]
+
+    print(f"  [direct test] Calibration: member score mean={calib_member.mean():.4f} std={calib_member.std():.4f} "
+          f"(n={len(calib_member)}) | nonmember score mean={calib_nonmember.mean():.4f} std={calib_nonmember.std():.4f} "
+          f"(n={len(calib_nonmember)})")
+
+    calib_scores = np.concatenate([calib_member, calib_nonmember])
+    calib_labels = np.concatenate([np.ones(len(calib_member)), np.zeros(len(calib_nonmember))])
+
+    candidates = np.percentile(calib_scores, np.arange(1, 100))
+    best_threshold, best_acc, best_direction = None, 0.0, "below"
+    for t in candidates:
+        for direction in ["below", "above"]:
+            preds = (calib_scores < t).astype(int) if direction == "below" else (calib_scores > t).astype(int)
+            acc = np.mean(preds == calib_labels)
+            if acc > best_acc:
+                best_acc, best_threshold, best_direction = acc, t, direction
+
+    print(f"  [direct test] Calibrated rule: predict MEMBER if score {'<' if best_direction == 'below' else '>'} "
+          f"{best_threshold:.4f} (calibration accuracy: {best_acc:.3f})")
+
+    eval_scores = np.concatenate([eval_member, eval_nonmember])
+    eval_labels = np.concatenate([np.ones(len(eval_member)), np.zeros(len(eval_nonmember))])
+    eval_preds = (eval_scores < best_threshold).astype(int) if best_direction == "below" else (eval_scores > best_threshold).astype(int)
+
+    accuracy = float(np.mean(eval_preds == eval_labels))
+    member_mask = eval_labels == 1
+    nonmember_mask = eval_labels == 0
+    member_recall = float(np.mean(eval_preds[member_mask] == 1)) if member_mask.sum() > 0 else 0.0
+    nonmember_recall = float(np.mean(eval_preds[nonmember_mask] == 0)) if nonmember_mask.sum() > 0 else 0.0
+    balanced_accuracy = (member_recall + nonmember_recall) / 2.0
+
+    return {
+        "accuracy": accuracy,
+        "balanced_accuracy": balanced_accuracy,
+        "baseline_accuracy": 0.5,
+        "advantage_over_baseline": balanced_accuracy - 0.5,
+        "member_recall": member_recall,
+        "nonmember_recall": nonmember_recall,
+        "learned_threshold": float(best_threshold),
+        "threshold_direction": best_direction,
+        "calibration_accuracy": float(best_acc),
+        "num_members_eval": int(member_mask.sum()),
+        "num_nonmembers_eval": int(nonmember_mask.sum()),
+    }
+
+
 class ShadowSurrogateTargetModel:
     def __init__(
         self,
@@ -118,7 +184,7 @@ class MembershipInferenceBlackBoxAttack:
         self.attack_l2_reg = attack_l2_reg
         self.name = name
 
-        self.attack_input_dim = 2
+        self.attack_input_dim = 1
         self.num_classes = 2
         self.weights = np.zeros((self.attack_input_dim, self.num_classes))
         self.bias = np.zeros(self.num_classes)
@@ -141,7 +207,7 @@ class MembershipInferenceBlackBoxAttack:
         true_label = np.asarray(true_label, dtype=np.float64)
         output_p = np.asarray(output_p, dtype=np.float64)
         confidence_in_label = np.where(true_label == 1.0, output_p, 1.0 - output_p)
-        return np.stack([true_label, confidence_in_label], axis=-1)
+        return confidence_in_label.reshape(-1, 1)
 
     def _forward(self, X: np.ndarray) -> np.ndarray:
         X_std = (X - self.x_mean) / self.x_std

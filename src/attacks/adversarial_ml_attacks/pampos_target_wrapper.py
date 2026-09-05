@@ -1,4 +1,5 @@
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +67,58 @@ class PAMPOSTarget:
         self.threshold = float(np.percentile(benign_scores, percentile))
         self.query_count = 0
 
+    def calibrate_robust(self, benign_windows: list, k: int = 3, percentile: float = 99.0,
+                          dup_round_decimals: int = 4, min_clean_fraction: float = 0.5) -> dict:
+        
+        signature_counts = Counter()
+        window_signatures = []
+        for window in benign_windows:
+            sigs = set()
+            for t in range(window.shape[0]):
+                sig = tuple(np.round(window[t], dup_round_decimals).tolist())
+                sigs.add(sig)
+                signature_counts[sig] += 1
+            window_signatures.append(sigs)
+
+        suspicious_signatures = {sig for sig, count in signature_counts.items() if count > 1}
+
+        clean_windows = []
+        for window, sigs in zip(benign_windows, window_signatures):
+            if sigs & suspicious_signatures:
+                continue
+            clean_windows.append(window)
+
+        n_flagged = len(benign_windows) - len(clean_windows)
+        fell_back = False
+        if len(clean_windows) < min_clean_fraction * len(benign_windows):
+            clean_windows = benign_windows
+            fell_back = True
+
+        all_errors = []
+        for window in clean_windows:
+            x = self._normalize(window).unsqueeze(0)
+            inputs = x[:, :-1, :]
+            targets = x[:, 1:, :]
+            with torch.no_grad():
+                preds = self.model(inputs)
+            errors = per_feature_errors(preds, targets)
+            all_errors.append(errors)
+        stacked = torch.cat(all_errors, dim=0)
+        self.feature_mae = stacked.mean(dim=(0, 1))
+
+        clean_scores = []
+        for window in clean_windows:
+            clean_scores.append(self.raw_score(window))
+        self.threshold = float(np.percentile(clean_scores, percentile))
+        self.query_count = 0
+
+        return {
+            "n_total_calibration_windows": len(benign_windows),
+            "n_flagged_as_suspicious": n_flagged,
+            "n_used_for_calibration": len(clean_windows),
+            "fell_back_to_full_set": fell_back,
+        }
+
     def predict_proba(self, window: np.ndarray, scale: float = 2.0) -> np.ndarray:
         score = self.raw_score(window)
         if self.threshold is None:
@@ -78,6 +131,36 @@ class PAMPOSTarget:
         score = self.raw_score(window)
         if self.threshold is None:
             raise ValueError("Call calibrate() before predict_label()")
+        return int(score > self.threshold)
+
+
+class DefendedPAMPOSTarget:
+    def __init__(self, base_target: PAMPOSTarget, noise_std: float = 3.0, hard_label_only: bool = True):
+        self.base_target = base_target
+        self.noise_std = noise_std
+        self.hard_label_only = hard_label_only
+        self.query_count = 0
+
+    @property
+    def threshold(self):
+        return self.base_target.threshold
+
+    def _noisy_score(self, window: np.ndarray) -> float:
+        self.query_count += 1
+        raw = self.base_target.raw_score(window)
+        noise = np.random.normal(0.0, self.noise_std)
+        return raw + noise
+
+    def predict_proba(self, window: np.ndarray, scale: float = 2.0) -> np.ndarray:
+        score = self._noisy_score(window)
+        z = (score - self.threshold) / (scale + 1e-8)
+        p_anomalous = 1.0 / (1.0 + np.exp(-z))
+        if self.hard_label_only:
+            p_anomalous = 1.0 if p_anomalous > 0.5 else 0.0
+        return np.array([1.0 - p_anomalous, p_anomalous])
+
+    def predict_label(self, window: np.ndarray) -> int:
+        score = self._noisy_score(window)
         return int(score > self.threshold)
 
 
