@@ -37,17 +37,20 @@ def get_town_from_scenario_name(scenario_name: str) -> str:
 
 def connect_carla(host: str = "localhost", port: int = 2000, timeout: float = 10.0):
     import carla
-
     client = carla.Client(host, port)
     client.set_timeout(timeout)
     return client
 
 
-def load_scenario_world(client, scenario_type_dir: Path, scenario_name: str):
+def load_scenario_world(client, scenario_type_dir: Path, scenario_name: str, low_resource_mode: bool = True):
     import carla
-
     town = get_town_from_scenario_name(scenario_name)
     world = client.load_world(town)
+
+    if low_resource_mode:
+        settings = world.get_settings()
+        settings.no_rendering_mode = True
+        world.apply_settings(settings)
 
     label_dir = Path(scenario_type_dir) / "ego_vehicle" / "label" / scenario_name
     frame_files = sorted(label_dir.glob("*.txt"), key=lambda p: get_frame_number(p.name))
@@ -61,7 +64,6 @@ def load_scenario_world(client, scenario_type_dir: Path, scenario_name: str):
 
 def spawn_agents_at_frame(replay_state: ReplayState, frame_idx: int):
     import carla
-
     world = replay_state.world
     blueprint_library = world.get_blueprint_library()
     parsed = parse_label_file(replay_state.frame_files[frame_idx])
@@ -102,7 +104,6 @@ def spawn_agents_at_frame(replay_state: ReplayState, frame_idx: int):
 
 def apply_frame_state(replay_state: ReplayState, frame_idx: int, skip_track_ids: set = None):
     import carla
-
     skip_track_ids = skip_track_ids or set()
     parsed = parse_label_file(replay_state.frame_files[frame_idx])
 
@@ -125,38 +126,27 @@ def apply_frame_state(replay_state: ReplayState, frame_idx: int, skip_track_ids:
 def cleanup_replay(replay_state: ReplayState):
     for agent in replay_state.agents.values():
         if agent.actor is not None:
-            agent.actor.destroy()
+            try:
+                if agent.actor.is_alive:
+                    agent.actor.destroy()
+            except RuntimeError:
+                pass
     replay_state.agents.clear()
 
 
-if __name__ == "__main__":
-    import argparse
+def cleanup_actor_ids(world, actor_ids: list):
+    for actor_id in actor_ids:
+        actor = world.get_actor(actor_id)
+        if actor is not None:
+            try:
+                if actor.is_alive:
+                    actor.destroy()
+            except RuntimeError:
+                pass
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("data_root", type=str)
-    parser.add_argument("--scenario_type", type=str, default="type1_subtype1_normal")
-    parser.add_argument("--host", type=str, default="localhost")
-    parser.add_argument("--port", type=int, default=2000)
-    args = parser.parse_args()
 
-    scenario_type_dir = Path(args.data_root) / args.scenario_type
-    scenario_names = list_scenarios(scenario_type_dir)
-    scenario_name = scenario_names[0]
-    print(f"[replay] Loading scenario: {scenario_name}")
-
-    client = connect_carla(host=args.host, port=args.port)
-    replay_state, meta = load_scenario_world(client, scenario_type_dir, scenario_name)
-    print(f"[replay] Loaded town: {replay_state.town}")
-    print(f"[replay] Meta: {meta}")
-    print(f"[replay] Total frames: {len(replay_state.frame_files)}")
-
-    spawn_agents_at_frame(replay_state, frame_idx=0)
-    print(f"[replay] Spawned {len(replay_state.agents)} agents at frame 0")
-
-    for frame_idx in range(1, min(len(replay_state.frame_files), 20)):
-        apply_frame_state(replay_state, frame_idx)
-
-    print(f"[replay] Replayed to frame {replay_state.current_frame_idx}")
-
-    cleanup_replay(replay_state)
-    print("[replay] Cleaned up actors")
+def cleanup_attack_record(replay_state: ReplayState, attack_record):
+    metadata = getattr(attack_record, "metadata", {}) or {}
+    for key in ("obstacle_actor_ids", "emergency_actor_ids", "sybil_actor_ids"):
+        if key in metadata:
+            cleanup_actor_ids(replay_state.world, metadata[key])
