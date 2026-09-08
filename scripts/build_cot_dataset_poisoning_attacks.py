@@ -17,6 +17,7 @@ from src.data_pipeline.deepaccident_loader import (
     get_frame_number,
     agent_feature_vector,
     EGO_TRACK_ID,
+    UNTRACKED_TRACK_ID,
     DeepAccidentBenignDataset,
 )
 from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target_with_canonical_calibration
@@ -47,6 +48,8 @@ def build_agent_windows(frames: list, seq_len: int, future_offset: int = 5) -> l
             continue
         for obj in frame["objects"]:
             if obj["track_id"] == EGO_TRACK_ID:
+                continue
+            if obj["track_id"] == UNTRACKED_TRACK_ID:
                 continue
             track_frame_indices.setdefault(obj["track_id"], []).append((frame_idx, obj))
 

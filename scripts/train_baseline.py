@@ -97,16 +97,12 @@ def main():
     processed_dir.mkdir(parents=True, exist_ok=True)
     stats_path = processed_dir / "feature_stats.npz"
 
-    if stats_path.exists():
-        print(f"[setup] Loading existing feature stats from {stats_path}")
-        stats = np.load(stats_path)
-        mean = torch.from_numpy(stats["mean"])
-        std = torch.from_numpy(stats["std"])
-    else:
-        print("[setup] Computing feature normalization stats from training split...")
-        mean, std = compute_dataset_stats(train_dataset_raw)
-        np.savez(stats_path, mean=mean.numpy(), std=std.numpy())
-        print(f"[setup] Saved feature stats to {stats_path}")
+    print("[setup] Computing feature normalization stats from the current training split...")
+    mean, std = compute_dataset_stats(train_dataset_raw)
+    np.savez(stats_path, mean=mean.numpy(), std=std.numpy())
+    print(f"[setup] Saved feature stats to {stats_path}")
+    print("[setup] NOTE: stats are always recomputed, never cached -- caching previously caused")
+    print("[setup] stale stats from an older dataset version to silently contaminate a retrain.")
 
     print(f"[setup] Feature mean: {mean.tolist()}")
     print(f"[setup] Feature std:  {std.tolist()}")

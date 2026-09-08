@@ -12,7 +12,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.data_pipeline.deepaccident_loader import (
     parse_label_file, parse_meta, list_scenarios, get_frame_number,
-    agent_feature_vector, EGO_TRACK_ID, DeepAccidentBenignDataset,
+    agent_feature_vector, EGO_TRACK_ID, UNTRACKED_TRACK_ID, DeepAccidentBenignDataset,
 )
 from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target_with_canonical_calibration
 from src.attacks.adversarial_ml_attacks.backdoor_attack import create_backdoor_attack
@@ -85,6 +85,8 @@ def build_agent_windows(frames: list, seq_len: int) -> list:
             continue
         for obj in frame["objects"]:
             if obj["track_id"] == EGO_TRACK_ID:
+                continue
+            if obj["track_id"] == UNTRACKED_TRACK_ID:
                 continue
             track_frame_indices.setdefault(obj["track_id"], []).append((frame_idx, obj))
 

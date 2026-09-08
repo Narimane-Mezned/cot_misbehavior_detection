@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 EGO_TRACK_ID = -100
+UNTRACKED_TRACK_ID = -1
 EXPECTED_LABEL_FIELDS = 13
 FRAME_PATTERN = re.compile(r"_(\d+)\.txt$")
 
@@ -140,6 +141,8 @@ def build_agent_sequences(scenario_type_dir: Path, scenario_name: str) -> dict[i
 
         for obj in parsed["objects"]:
             if obj["track_id"] == EGO_TRACK_ID:
+                continue
+            if obj["track_id"] == UNTRACKED_TRACK_ID:
                 continue
             per_track_features[obj["track_id"]].append(agent_feature_vector(obj, ego_obj))
 
