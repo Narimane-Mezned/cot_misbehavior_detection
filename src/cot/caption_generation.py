@@ -24,15 +24,35 @@ def distance_between(obj_a: dict, obj_b: dict) -> float:
     return math.sqrt((obj_a["x"] - obj_b["x"]) ** 2 + (obj_a["y"] - obj_b["y"]) ** 2)
 
 
-def describe_scene(meta: dict, num_agents: int) -> str:
+def _variation_index(seed_parts: tuple, num_options: int) -> int:
+    return hash(seed_parts) % num_options
+
+
+def describe_scene(meta: dict, num_agents: int, variation_seed: tuple = ()) -> str:
     road_type = meta.get("road_type", "an unspecified road type")
     weather = meta.get("weather", "unspecified weather")
     ego_direction = meta.get("ego_vehicle_direction", "an unspecified direction")
+    spawn_side = meta.get("another_vehicle_spawn_side")
 
-    return (
+    spawn_clause = f", with another vehicle entering from the {spawn_side}," if spawn_side else ""
+
+    seed = (road_type, weather, ego_direction, num_agents) + variation_seed
+    idx = _variation_index(seed, 4)
+
+    templates = [
         f"The ego vehicle is navigating {road_type} under {weather} conditions, "
-        f"heading {ego_direction}, with {num_agents} other tracked agent(s) nearby."
-    )
+        f"heading {ego_direction}{spawn_clause} with {num_agents} other tracked agent(s) nearby.",
+
+        f"At {road_type}, in {weather} conditions, the ego vehicle heads {ego_direction}"
+        f"{spawn_clause} alongside {num_agents} other tracked agent(s).",
+
+        f"This scene takes place at {road_type} ({weather}). The ego vehicle is heading "
+        f"{ego_direction}{spawn_clause} and {num_agents} other agent(s) are being tracked nearby.",
+
+        f"Ego is moving {ego_direction} through {road_type} under {weather} skies"
+        f"{spawn_clause} with {num_agents} other tracked agent(s) in range.",
+    ]
+    return templates[idx]
 
 
 def identify_critical_objects(
@@ -82,25 +102,47 @@ def predict_risk(
 ) -> Dict[str, str]:
     is_anomalous = anomaly_score > threshold
     ratio = anomaly_score / threshold if threshold > 0 else 0.0
+    seed = (round(anomaly_score, 2), round(threshold, 2))
 
     if not is_anomalous:
         level = "low"
-        explanation = (
+        templates = [
             f"Anomaly score ({anomaly_score:.3f}) is below the calibrated threshold "
-            f"({threshold:.3f}) -- behavior is consistent with normal driving patterns."
-        )
+            f"({threshold:.3f}) -- behavior is consistent with normal driving patterns.",
+
+            f"With an anomaly score of {anomaly_score:.3f}, well under the {threshold:.3f} "
+            f"threshold, this behavior looks like ordinary driving.",
+
+            f"No cause for concern here: the anomaly score ({anomaly_score:.3f}) stays under "
+            f"the calibrated threshold of {threshold:.3f}.",
+        ]
+        explanation = templates[_variation_index(seed, len(templates))]
     elif ratio < 2.0:
         level = "moderate"
-        explanation = (
+        templates = [
             f"Anomaly score ({anomaly_score:.3f}) exceeds the calibrated threshold "
-            f"({threshold:.3f}) by a moderate margin, suggesting a deviation worth monitoring."
-        )
+            f"({threshold:.3f}) by a moderate margin, suggesting a deviation worth monitoring.",
+
+            f"The anomaly score ({anomaly_score:.3f}) crosses the {threshold:.3f} threshold "
+            f"by a modest amount -- somewhat unusual, though not alarming yet.",
+
+            f"This behavior is mildly outside the norm: {anomaly_score:.3f} against a threshold "
+            f"of {threshold:.3f}, worth a second look.",
+        ]
+        explanation = templates[_variation_index(seed, len(templates))]
     else:
         level = "high"
-        explanation = (
+        templates = [
             f"Anomaly score ({anomaly_score:.3f}) substantially exceeds the calibrated threshold "
-            f"({threshold:.3f}) ({ratio:.1f}x), indicating a strong deviation from normal patterns."
-        )
+            f"({threshold:.3f}) ({ratio:.1f}x), indicating a strong deviation from normal patterns.",
+
+            f"This is a significant deviation: the anomaly score ({anomaly_score:.3f}) is "
+            f"{ratio:.1f} times the calibrated threshold ({threshold:.3f}).",
+
+            f"Strong evidence of abnormal behavior -- {anomaly_score:.3f} vs. a threshold of "
+            f"{threshold:.3f}, a {ratio:.1f}x excess.",
+        ]
+        explanation = templates[_variation_index(seed, len(templates))]
 
     if dreaming_errors and len(dreaming_errors) >= 2:
         growth = dreaming_errors[-1] / dreaming_errors[0] if dreaming_errors[0] > 0 else 0.0
@@ -160,13 +202,29 @@ def plan_action(ego_current: dict, ego_future: Optional[dict] = None) -> str:
     speed_delta = future_speed - current_speed
 
     lateral_shift = abs(ego_future["y"] - ego_current["y"])
+    seed = (round(current_speed, 1), round(future_speed, 1), round(lateral_shift, 1))
 
     if speed_delta < -1.0:
-        return f"Ego vehicle is expected to brake, reducing speed from {current_speed:.1f} to {future_speed:.1f} m/s."
+        templates = [
+            f"Ego vehicle is expected to brake, reducing speed from {current_speed:.1f} to {future_speed:.1f} m/s.",
+            f"A braking maneuver is anticipated: speed drops from {current_speed:.1f} m/s to {future_speed:.1f} m/s.",
+            f"The ego vehicle slows from {current_speed:.1f} to {future_speed:.1f} m/s, consistent with braking.",
+        ]
+        return templates[_variation_index(seed, len(templates))]
     elif lateral_shift > 1.5:
-        return f"Ego vehicle is expected to yield or swerve, shifting laterally by {lateral_shift:.1f}m."
+        templates = [
+            f"Ego vehicle is expected to yield or swerve, shifting laterally by {lateral_shift:.1f}m.",
+            f"A lateral shift of {lateral_shift:.1f}m suggests the ego vehicle yields or swerves.",
+            f"The ego vehicle's path shifts {lateral_shift:.1f}m sideways, indicating a yield/swerve maneuver.",
+        ]
+        return templates[_variation_index(seed, len(templates))]
     else:
-        return f"Ego vehicle is expected to continue at a steady speed (~{current_speed:.1f} m/s), no evasive action planned."
+        templates = [
+            f"Ego vehicle is expected to continue at a steady speed (~{current_speed:.1f} m/s), no evasive action planned.",
+            f"No evasive action is planned; ego continues at roughly {current_speed:.1f} m/s.",
+            f"The ego vehicle maintains a steady ~{current_speed:.1f} m/s with no maneuver expected.",
+        ]
+        return templates[_variation_index(seed, len(templates))]
 
 
 def generate_cot_caption(
@@ -179,7 +237,8 @@ def generate_cot_caption(
     dreaming_errors: Optional[List[float]] = None,
     ego_future_obj: Optional[dict] = None,
 ) -> CoTCaption:
-    scene_desc = describe_scene(meta, num_agents=len(objects) - 1)
+    scene_seed = (round(anomaly_score, 4), round(ego_obj.get("x", 0.0), 1), round(ego_obj.get("y", 0.0), 1))
+    scene_desc = describe_scene(meta, num_agents=len(objects) - 1, variation_seed=scene_seed)
     critical_objects = identify_critical_objects(objects, ego_obj, attack_record)
     risk = predict_risk(anomaly_score, threshold, dreaming_errors)
     counterfactual = counterfactual_reasoning(attack_record, meta)
