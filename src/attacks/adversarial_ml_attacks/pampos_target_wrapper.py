@@ -1,5 +1,4 @@
 import sys
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -67,58 +66,6 @@ class PAMPOSTarget:
         self.threshold = float(np.percentile(benign_scores, percentile))
         self.query_count = 0
 
-    def calibrate_robust(self, benign_windows: list, k: int = 3, percentile: float = 99.0,
-                          dup_round_decimals: int = 4, min_clean_fraction: float = 0.5) -> dict:
-        
-        signature_counts = Counter()
-        window_signatures = []
-        for window in benign_windows:
-            sigs = set()
-            for t in range(window.shape[0]):
-                sig = tuple(np.round(window[t], dup_round_decimals).tolist())
-                sigs.add(sig)
-                signature_counts[sig] += 1
-            window_signatures.append(sigs)
-
-        suspicious_signatures = {sig for sig, count in signature_counts.items() if count > 1}
-
-        clean_windows = []
-        for window, sigs in zip(benign_windows, window_signatures):
-            if sigs & suspicious_signatures:
-                continue
-            clean_windows.append(window)
-
-        n_flagged = len(benign_windows) - len(clean_windows)
-        fell_back = False
-        if len(clean_windows) < min_clean_fraction * len(benign_windows):
-            clean_windows = benign_windows
-            fell_back = True
-
-        all_errors = []
-        for window in clean_windows:
-            x = self._normalize(window).unsqueeze(0)
-            inputs = x[:, :-1, :]
-            targets = x[:, 1:, :]
-            with torch.no_grad():
-                preds = self.model(inputs)
-            errors = per_feature_errors(preds, targets)
-            all_errors.append(errors)
-        stacked = torch.cat(all_errors, dim=0)
-        self.feature_mae = stacked.mean(dim=(0, 1))
-
-        clean_scores = []
-        for window in clean_windows:
-            clean_scores.append(self.raw_score(window))
-        self.threshold = float(np.percentile(clean_scores, percentile))
-        self.query_count = 0
-
-        return {
-            "n_total_calibration_windows": len(benign_windows),
-            "n_flagged_as_suspicious": n_flagged,
-            "n_used_for_calibration": len(clean_windows),
-            "fell_back_to_full_set": fell_back,
-        }
-
     def predict_proba(self, window: np.ndarray, scale: float = 2.0) -> np.ndarray:
         score = self.raw_score(window)
         if self.threshold is None:
@@ -168,6 +115,26 @@ def load_pampos_target(repo_root: Path, model_config: dict, device: str = "cpu")
     checkpoint_path = repo_root / "outputs" / "checkpoints" / "pampos_baseline_best.pt"
     feature_stats_path = repo_root / "data" / "processed" / "feature_stats.npz"
     return PAMPOSTarget(checkpoint_path, feature_stats_path, model_config, device=device)
+
+
+def load_pampos_target_with_canonical_calibration(repo_root: Path, model_config: dict, device: str = "cpu") -> PAMPOSTarget:
+    import json
+
+    target = load_pampos_target(repo_root, model_config, device=device)
+
+    calibration_path = repo_root / "data" / "processed" / "calibration.json"
+    if not calibration_path.exists():
+        raise FileNotFoundError(
+            f"No canonical calibration found at {calibration_path}. "
+            f"Run scripts/calibrate_detector.py first to generate it."
+        )
+
+    with open(calibration_path, "r") as f:
+        calibration = json.load(f)
+
+    target.threshold = calibration["threshold"]
+    target.feature_mae = torch.tensor(calibration["feature_mae"], device=device)
+    return target
 
 
 if __name__ == "__main__":

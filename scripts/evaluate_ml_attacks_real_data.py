@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.data_pipeline.deepaccident_loader import DeepAccidentBenignDataset
-from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target
+from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target_with_canonical_calibration
 from src.attacks.adversarial_ml_attacks.membership_inference_black_box import run_membership_inference_v2
 from src.attacks.adversarial_ml_attacks.knockoff_nets import KnockoffNetsAttack, pampos_target_query_func
 from src.attacks.adversarial_ml_attacks.attribute_inference_black_box import (
@@ -274,16 +274,13 @@ def main():
         "dim_feedforward": config["model"]["dim_feedforward"], "dropout": config["model"]["dropout"],
     }
 
-    print("[setup] Loading trained PAMPOS checkpoint...")
-    target = load_pampos_target(REPO_ROOT, model_config)
+    print("[setup] Loading trained PAMPOS checkpoint with canonical calibration...")
+    target = load_pampos_target_with_canonical_calibration(REPO_ROOT, model_config)
+    print(f"[setup] Canonical threshold: {target.threshold:.4f}")
 
     print("[setup] Rebuilding real train/val split (identical to train_baseline.py)...")
     train_windows, val_windows = get_real_train_val_windows(config, REPO_ROOT)
     print(f"[setup] Train windows: {len(train_windows)}, Val windows: {len(val_windows)}")
-
-    print("[setup] Calibrating on real train windows...")
-    target.calibrate(train_windows[:300])
-    print(f"[setup] Calibrated threshold: {target.threshold:.4f}")
 
     results = {}
     run_membership_inference(target, train_windows, val_windows, seq_len, n_features, results)

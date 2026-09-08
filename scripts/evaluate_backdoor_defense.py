@@ -3,16 +3,18 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 import yaml
+from torch.utils.data import random_split
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.data_pipeline.deepaccident_loader import (
     parse_label_file, parse_meta, list_scenarios, get_frame_number,
-    agent_feature_vector, EGO_TRACK_ID,
+    agent_feature_vector, EGO_TRACK_ID, DeepAccidentBenignDataset,
 )
-from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target
+from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target_with_canonical_calibration
 from src.attacks.adversarial_ml_attacks.backdoor_attack import create_backdoor_attack
 
 FEATURE_NAMES = ["x", "y", "vx", "vy", "yaw", "point_count", "is_camera_visible", "distance_to_ego"]
@@ -121,10 +123,12 @@ def main():
         "dim_feedforward": config["model"]["dim_feedforward"], "dropout": config["model"]["dropout"],
     }
 
-    print("[setup] Loading trained PAMPOS checkpoint...")
-    target = load_pampos_target(REPO_ROOT, model_config)
+    print("[setup] Loading trained PAMPOS checkpoint with canonical calibration...")
+    target = load_pampos_target_with_canonical_calibration(REPO_ROOT, model_config)
+    clean_threshold_naive = target.threshold
+    print(f"[setup] Canonical clean threshold: {clean_threshold_naive:.4f}")
 
-    print("[setup] Collecting all benign windows (same methodology as build_cot_dataset_poisoning_attacks.py)...")
+    print("[setup] Collecting all benign windows (for probe-finding, not for calibration)...")
     all_windows = []
     for scenario_type_dir in sorted(data_root.glob("*_normal")):
         for scenario_name in list_scenarios(scenario_type_dir):
@@ -132,15 +136,23 @@ def main():
             windows = build_agent_windows(frames, seq_len)
             all_windows.extend(windows)
 
-    calibration_windows = all_windows[:300]
-    print(f"[setup] Using {len(calibration_windows)} windows for calibration")
+    print("[setup] Loading the SAME canonical 300 windows used for calibration.json, "
+          "for use in the poisoning experiments below...")
+    canonical_dataset = DeepAccidentBenignDataset(data_root=data_root, seq_len=seq_len)
+    canonical_generator = torch.Generator().manual_seed(config["training"]["seed"])
+    canonical_val_size = max(1, int(len(canonical_dataset) * config["training"]["val_fraction"]))
+    canonical_train_size = len(canonical_dataset) - canonical_val_size
+    canonical_train_subset, _ = random_split(
+        canonical_dataset, [canonical_train_size, canonical_val_size], generator=canonical_generator
+    )
+    canonical_train_windows = [canonical_dataset.sequences[i] for i in canonical_train_subset.indices]
+    calibration_windows = canonical_train_windows[:300]
+    print(f"[setup] Using {len(calibration_windows)} canonical windows for calibration")
 
     print("\n" + "=" * 70)
-    print("BASELINE: naive calibration (reproducing the original 20/20 result)")
+    print("BASELINE: canonical calibration (reproducing the original 20/20 result)")
     print("=" * 70)
-    target.calibrate(calibration_windows)
-    clean_threshold_naive = target.threshold
-    print(f"Clean threshold (naive percentile): {clean_threshold_naive:.4f}")
+    print(f"Clean threshold (canonical): {clean_threshold_naive:.4f}")
 
     for w in all_windows:
         pass

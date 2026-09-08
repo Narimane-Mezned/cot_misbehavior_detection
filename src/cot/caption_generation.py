@@ -114,15 +114,41 @@ def predict_risk(
     return {"level": level, "explanation": explanation}
 
 
-def counterfactual_reasoning(attack_record: Optional[object] = None) -> str:
-    if attack_record is None:
-        return "No injected attack is present in this scene; no counterfactual is needed."
+def describe_designed_collision(meta: dict) -> Optional[str]:
+    if not meta.get("designed_collision"):
+        return None
 
-    physical_inconsistency = getattr(attack_record, "physical_inconsistency", None)
-    if physical_inconsistency:
-        return physical_inconsistency
+    colliding_agents = meta.get("colliding_agents", [])
+    if colliding_agents == ["none", "none"]:
+        return None
 
-    return "An attack was injected but no specific physical inconsistency was recorded."
+    partner1_type = meta.get("collision_partner1_type", "vehicle")
+    partner2_type = meta.get("collision_partner2_type", "vehicle")
+    dir1 = meta.get("collision_direction_1", "")
+    dir2 = meta.get("collision_direction_2", "")
+
+    roles = " and ".join(r for r in colliding_agents if r != "none")
+
+    return (
+        f"This scenario is a designed accident scenario involving the {roles} "
+        f"vehicle(s) -- a {partner1_type} and a {partner2_type} on {dir1} trajectories "
+        f"with a {dir2} impact configuration, per the scenario's ground-truth design."
+    )
+
+
+def counterfactual_reasoning(attack_record: Optional[object] = None, meta: Optional[dict] = None) -> str:
+    if attack_record is not None:
+        physical_inconsistency = getattr(attack_record, "physical_inconsistency", None)
+        if physical_inconsistency:
+            return physical_inconsistency
+        return "An attack was injected but no specific physical inconsistency was recorded."
+
+    if meta is not None:
+        collision_description = describe_designed_collision(meta)
+        if collision_description:
+            return collision_description
+
+    return "No injected attack is present in this scene; no counterfactual is needed."
 
 
 def plan_action(ego_current: dict, ego_future: Optional[dict] = None) -> str:
@@ -156,7 +182,7 @@ def generate_cot_caption(
     scene_desc = describe_scene(meta, num_agents=len(objects) - 1)
     critical_objects = identify_critical_objects(objects, ego_obj, attack_record)
     risk = predict_risk(anomaly_score, threshold, dreaming_errors)
-    counterfactual = counterfactual_reasoning(attack_record)
+    counterfactual = counterfactual_reasoning(attack_record, meta)
     action = plan_action(ego_obj, ego_future_obj)
 
     critical_summary = "; ".join(

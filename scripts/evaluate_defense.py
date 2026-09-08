@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.data_pipeline.deepaccident_loader import DeepAccidentBenignDataset
-from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target, DefendedPAMPOSTarget
+from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target_with_canonical_calibration, DefendedPAMPOSTarget
 from src.attacks.adversarial_ml_attacks.knockoff_nets import KnockoffNetsAttack, pampos_target_query_func
 from src.attacks.adversarial_ml_attacks.attribute_inference_black_box import (
     AttributeInferenceBlackBoxAttack, flatten_window_query_func,
@@ -95,10 +95,11 @@ def main():
         "dim_feedforward": config["model"]["dim_feedforward"], "dropout": config["model"]["dropout"],
     }
 
-    print("[setup] Loading trained PAMPOS checkpoint...")
-    base_target = load_pampos_target(REPO_ROOT, model_config)
+    print("[setup] Loading trained PAMPOS checkpoint with canonical calibration...")
+    base_target = load_pampos_target_with_canonical_calibration(REPO_ROOT, model_config)
+    print(f"[setup] Canonical threshold: {base_target.threshold:.4f}")
 
-    print("[setup] Rebuilding real train/val split...")
+    print("[setup] Rebuilding real train/val split (for train/val window access elsewhere in this script)...")
     data_root = REPO_ROOT / config["data"]["raw_dir"]
     full_dataset = DeepAccidentBenignDataset(data_root=data_root, seq_len=seq_len)
     val_fraction = config["training"]["val_fraction"]
@@ -108,10 +109,6 @@ def main():
     train_subset, val_subset = random_split(full_dataset, [train_size, val_size], generator=generator)
     train_windows = [full_dataset.sequences[i] for i in train_subset.indices]
     val_windows = [full_dataset.sequences[i] for i in val_subset.indices]
-
-    print("[setup] Calibrating base (undefended) target...")
-    base_target.calibrate(train_windows[:300])
-    print(f"[setup] Threshold: {base_target.threshold:.4f}")
 
     defended_target = DefendedPAMPOSTarget(base_target, noise_std=base_target.threshold * 0.15, hard_label_only=True)
     print(f"[setup] Defended target: noise_std={defended_target.noise_std:.4f}, hard_label_only=True")

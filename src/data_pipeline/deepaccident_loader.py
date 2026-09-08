@@ -15,14 +15,40 @@ FRAME_PATTERN = re.compile(r"_(\d+)\.txt$")
 def parse_meta(path: Path) -> dict:
     lines = Path(path).read_text().strip().split("\n")
 
-    first_line = lines[0].split()
-    weather = first_line[0]
-    collision_info = [int(x) for x in first_line[1:]]
+    first_line_tokens = lines[0].split()
+    weather = first_line_tokens[0]
+    rest_tokens = first_line_tokens[1:]
+
+    def try_parse_token(token: str):
+        try:
+            return int(token)
+        except ValueError:
+            pass
+        try:
+            return float(token)
+        except ValueError:
+            return token
+
+    parsed_rest = [try_parse_token(t) for t in rest_tokens]
 
     meta = {
         "weather": weather,
-        "collision_info": collision_info,
+        "collision_header_raw": parsed_rest,
+        "designed_collision": False,
     }
+
+    if len(parsed_rest) == 8 and isinstance(parsed_rest[1], str) and isinstance(parsed_rest[3], str):
+        meta["designed_collision"] = True
+        meta["collision_partner1_id"] = parsed_rest[0]
+        meta["collision_partner1_type"] = parsed_rest[1]
+        meta["collision_partner2_id"] = parsed_rest[2]
+        meta["collision_partner2_type"] = parsed_rest[3]
+        meta["collision_metric"] = parsed_rest[4]
+        meta["collision_direction_1"] = parsed_rest[5]
+        meta["collision_direction_2"] = parsed_rest[6]
+        meta["num_frames"] = parsed_rest[7]
+    else:
+        meta["num_frames"] = parsed_rest[-1] if parsed_rest else None
 
     for line in lines[1:]:
         line = line.strip()

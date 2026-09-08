@@ -16,7 +16,7 @@ from src.data_pipeline.deepaccident_loader import (
     agent_feature_vector,
     EGO_TRACK_ID,
 )
-from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target
+from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import load_pampos_target_with_canonical_calibration
 from src.cot.caption_generation import generate_cot_caption
 
 
@@ -101,14 +101,9 @@ def main():
         "dropout": config["model"]["dropout"],
     }
 
-    print("[setup] Loading trained PAMPOS checkpoint...")
-    target = load_pampos_target(REPO_ROOT, model_config)
-
-    print("[setup] Collecting calibration windows from benign scenarios...")
-    calibration_windows = collect_calibration_windows(data_root, seq_len, max_windows=300)
-    print(f"[setup] Calibrating on {len(calibration_windows)} real benign windows...")
-    target.calibrate(calibration_windows)
-    print(f"[setup] Calibrated threshold: {target.threshold:.4f}")
+    print("[setup] Loading trained PAMPOS checkpoint with canonical calibration...")
+    target = load_pampos_target_with_canonical_calibration(REPO_ROOT, model_config)
+    print(f"[setup] Canonical threshold: {target.threshold:.4f}")
 
     output_dir = REPO_ROOT / "data" / "danger_cot"
     output_dir.mkdir(parents=True, exist_ok=True)
