@@ -123,7 +123,7 @@ def main():
                 windows = build_agent_windows(frames, seq_len)
 
                 for w in windows:
-                    anomaly_score = target.raw_score(w["feature_window"])
+                    anomaly_score, feature_errors = target.score_with_breakdown(w["feature_window"])
 
                     caption = generate_cot_caption(
                         meta=meta,
@@ -131,6 +131,8 @@ def main():
                         ego_obj=w["ego_at_end"],
                         anomaly_score=anomaly_score,
                         threshold=target.threshold,
+                        subject_track_id=w["track_id"],
+                        feature_errors=feature_errors,
                         attack_record=None,
                         dreaming_errors=None,
                         ego_future_obj=w["ego_future"],
@@ -144,12 +146,15 @@ def main():
                         "anomaly_score": anomaly_score,
                         "threshold": target.threshold,
                         "risk_level": caption.risk_level,
+                        "detector_status": caption.detector_status,
                         "full_caption": caption.full_caption,
-                        "scene_description": caption.scene_description,
-                        "critical_objects": caption.critical_objects,
-                        "risk_explanation": caption.risk_explanation,
-                        "counterfactual": caption.counterfactual,
-                        "action_plan": caption.action_plan,
+                        "subject": caption.subject,
+                        "verdict": caption.verdict,
+                        "evidence": caption.evidence,
+                        "sensor_corroboration": caption.sensor_corroboration,
+                        "context": caption.context,
+                        "attack_note": caption.attack_note,
+                        "top_features": caption.metadata.get("top_features"),
                     }
                     out_f.write(json.dumps(record) + "\n")
                     num_written += 1

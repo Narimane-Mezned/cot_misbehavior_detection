@@ -252,9 +252,13 @@ def main():
 
     num_written = 0
 
+    target.feature_mae = clean_feature_mae
+    target.threshold = clean_threshold
+
     with open(output_path, "w") as out_f:
         for probe in top_probes:
             meta = scenario_metas[probe["scenario_name"]]
+            _, probe_feature_errors = target.score_with_breakdown(probe["feature_window"])
 
             for attack_name, record, poisoned_score, hidden in [
                 ("backdoor_attack", make_backdoor_record(probe["track_id"], probe["end_frame_idx"], probe["backdoor_stats"], probe["clean_score"], probe["backdoor_score_poisoned"]), probe["backdoor_score_poisoned"], probe["backdoor_hidden"]),
@@ -266,7 +270,11 @@ def main():
                     ego_obj=probe["ego_at_end"],
                     anomaly_score=poisoned_score,
                     threshold=clean_threshold,
+                    subject_track_id=probe["track_id"],
+                    feature_errors=probe_feature_errors,
                     attack_record=record,
+                    clean_score=probe["clean_score"],
+                    poisoned_score=poisoned_score,
                     dreaming_errors=None,
                     ego_future_obj=probe["ego_future"],
                 )
@@ -278,9 +286,17 @@ def main():
                     "attack_type": attack_name,
                     "clean_score": probe["clean_score"],
                     "poisoned_score": poisoned_score,
+                    "anomaly_score": poisoned_score,
+                    "threshold": clean_threshold,
                     "attack_hid_the_detection": hidden,
                     "full_caption": caption.full_caption,
                     "risk_level": caption.risk_level,
+                    "detector_status": caption.detector_status,
+                    "subject": caption.subject,
+                    "verdict": caption.verdict,
+                    "evidence": caption.evidence,
+                    "sensor_corroboration": caption.sensor_corroboration,
+                    "attack_note": caption.attack_note,
                 }) + "\n")
                 num_written += 1
 

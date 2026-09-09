@@ -193,6 +193,10 @@ def serialize_attack_record(record) -> dict:
     }
 
 
+def run_already_done(output_dir: Path, scenario_name: str, run_label: str) -> bool:
+    return (output_dir / f"{scenario_name}__{run_label}.json").exists()
+
+
 def save_run(output_dir: Path, scenario_name: str, run_label: str, attack_type, result: dict):
     payload = {
         "scenario_name": scenario_name,
@@ -226,6 +230,8 @@ def main():
     parser.add_argument("--max_frames", type=int, default=60)
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip runs whose output file already exists (use after a crash)")
     parser.add_argument("--attacks", type=str,
                         default="sensor_spoofing,fake_emergency,fake_safety,traffic_light_tampering,universal_perturbation,sybil")
     args = parser.parse_args()
@@ -265,13 +271,16 @@ def main():
     for scenario_name in scenario_names:
         print(f"[scenario] {scenario_name}")
 
-        print("  [clean] pure replay, no release, no attack...")
-        try:
+        if args.resume and run_already_done(output_dir, scenario_name, "clean"):
+            print("  [clean] already saved, skipping (resume)")
+        else:
+          print("  [clean] pure replay, no release, no attack...")
+          try:
             result = run_replay(client, scenario_type_dir, scenario_name, traffic_manager,
-                                mode="clean", max_frames=args.max_frames)
+                                  mode="clean", max_frames=args.max_frames)
             out = save_run(output_dir, scenario_name, "clean", None, result)
             print(f"  [clean] {len(result['trajectory'])} frames -> {out.name}")
-        except Exception as e:
+          except Exception as e:
             print(f"  [clean] FAILED: {type(e).__name__}: {e}")
             continue
 
@@ -281,19 +290,29 @@ def main():
                 continue
             attack_fn, attack_kwargs, release_all = registry[attack_name]
 
-            print(f"  [{attack_name}] attacked run...")
-            try:
+            if args.resume and run_already_done(output_dir, scenario_name, f"{attack_name}__attacked"):
+                print(f"  [{attack_name}] attacked run already saved, skipping (resume)")
+                attacked = None
+            else:
+              print(f"  [{attack_name}] attacked run...")
+              try:
                 attacked = run_replay(client, scenario_type_dir, scenario_name, traffic_manager,
-                                      mode="attacked", attack_fn=attack_fn,
-                                      attack_kwargs=attack_kwargs, release_all=release_all,
-                                      max_frames=args.max_frames)
+                                        mode="attacked", attack_fn=attack_fn,
+                                        attack_kwargs=attack_kwargs, release_all=release_all,
+                                        max_frames=args.max_frames)
                 out = save_run(output_dir, scenario_name, f"{attack_name}__attacked",
-                               attack_name, attacked)
+                                 attack_name, attacked)
                 print(f"  [{attack_name}] {len(attacked['trajectory'])} frames -> {out.name}")
-            except Exception as e:
+              except Exception as e:
                 print(f"  [{attack_name}] attacked run FAILED: {type(e).__name__}: {e}")
                 continue
 
+            if attacked is None:
+                print(f"  [{attack_name}] control run skipped (attacked run was skipped)")
+                continue
+            if args.resume and run_already_done(output_dir, scenario_name, f"{attack_name}__control"):
+                print(f"  [{attack_name}] control run already saved, skipping (resume)")
+                continue
             print(f"  [{attack_name}] matched control run (same agents released, no attack)...")
             try:
                 control = run_replay(client, scenario_type_dir, scenario_name, traffic_manager,

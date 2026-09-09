@@ -46,6 +46,21 @@ class PAMPOSTarget:
         score = topk_anomaly_score(errors, k=3).mean().item()
         return score
 
+    @torch.no_grad()
+    def score_with_breakdown(self, window: np.ndarray):
+        self.query_count += 1
+        x = self._normalize(window).unsqueeze(0)
+        inputs = x[:, :-1, :]
+        targets = x[:, 1:, :]
+        preds = self.model(inputs)
+
+        errors = per_feature_errors(preds, targets)
+        if self.feature_mae is not None:
+            errors = normalize_errors(errors, self.feature_mae)
+        score = topk_anomaly_score(errors, k=3).mean().item()
+        per_feature = errors.mean(dim=(0, 1)).cpu().numpy()
+        return score, per_feature
+
     def calibrate(self, benign_windows: list, k: int = 3, percentile: float = 99.0):
         all_errors = []
         for window in benign_windows:

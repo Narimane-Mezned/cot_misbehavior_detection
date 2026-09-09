@@ -22,123 +22,152 @@ def check_risk_level_consistency(record: dict) -> tuple:
     if score is None or threshold is None or level is None:
         return None, "missing fields"
 
-    if score <= threshold:
-        expected = "low"
-    elif score < 2 * threshold:
-        expected = "moderate"
-    else:
-        expected = "high"
+    if level == "compromised":
+        clean = record.get("clean_score")
+        if clean is None:
+            return False, "risk_level='compromised' but no clean_score recorded to justify it"
+        if clean > threshold and score <= threshold:
+            return True, ""
+        return False, (f"risk_level='compromised' but clean_score={clean:.3f} / "
+                       f"score={score:.3f} vs threshold={threshold:.3f} does not show a hidden detection")
 
+    expected = "low" if score <= threshold else ("moderate" if score < 2 * threshold else "high")
     if level == expected:
         return True, ""
     return False, f"risk_level='{level}' but score={score:.3f} vs threshold={threshold:.3f} implies '{expected}'"
 
 
+def check_subject_named(record: dict) -> tuple:
+    tid = record.get("track_id")
+    caption = record.get("full_caption", "")
+    if tid is None or not caption:
+        return None, "missing fields"
+    if f"track_id={tid}" in caption:
+        return True, ""
+    return False, f"scored agent track_id={tid} never appears in the caption"
+
+
+def check_subject_named_first(record: dict) -> tuple:
+    tid = record.get("track_id")
+    subject = record.get("subject", "")
+    if tid is None or not subject:
+        return None, "missing fields"
+    if f"track_id={tid}" in subject:
+        return True, ""
+    return False, f"subject field does not name the scored agent track_id={tid}"
+
+
 def check_score_quoted_correctly(record: dict) -> tuple:
     score = record.get("anomaly_score")
-    explanation = record.get("risk_explanation", "")
-    if score is None or not explanation:
+    verdict = record.get("verdict", "")
+    if score is None or not verdict:
         return None, "missing fields"
-
-    quoted = extract_numbers(explanation)
+    quoted = [float(m) for m in NUMBER_PATTERN.findall(verdict)]
     if any(abs(q - score) < 0.01 for q in quoted):
         return True, ""
-    return False, f"anomaly_score={score:.3f} not found among numbers quoted in risk_explanation: {quoted}"
+    return False, f"anomaly_score={score:.3f} not found among numbers quoted in verdict: {quoted}"
 
 
 def check_threshold_quoted_correctly(record: dict) -> tuple:
     threshold = record.get("threshold")
-    explanation = record.get("risk_explanation", "")
-    if threshold is None or not explanation:
+    verdict = record.get("verdict", "")
+    if threshold is None or not verdict:
         return None, "missing fields"
-
-    quoted = extract_numbers(explanation)
+    quoted = [float(m) for m in NUMBER_PATTERN.findall(verdict)]
     if any(abs(q - threshold) < 0.01 for q in quoted):
         return True, ""
-    return False, f"threshold={threshold:.3f} not found among numbers quoted in risk_explanation: {quoted}"
+    return False, f"threshold={threshold:.3f} not found among numbers quoted in verdict: {quoted}"
 
 
-def check_critical_objects_grounded(record: dict) -> tuple:
-    critical_objects = record.get("critical_objects", [])
-    caption = record.get("full_caption", "")
+def check_sensor_claim_consistent(record: dict) -> tuple:
+    text = record.get("sensor_corroboration", "")
+    if not text:
+        return None, "no sensor corroboration text"
 
-    if not critical_objects:
-        if "no other agents in range" in caption:
+    m = re.search(r"(\d+) LiDAR points", text) or re.search(r"strong \((\d+) points\)", text)
+    absent = "corroboration is absent" in text
+
+    if "unavailable at this range" in text:
+        rm = re.search(r"no LiDAR returns at ([\d.]+)m", text)
+        if not rm:
+            return False, "claims out-of-range but does not state the distance"
+        dist = float(rm.group(1))
+        if dist <= 80.0:
+            return False, f"claims out-of-range at only {dist}m, which is within sensor range"
+        return True, ""
+
+    if absent:
+        if "LiDAR returned no points" in text:
             return True, ""
-        return None, "no critical objects listed"
+        return False, "claims absent corroboration without stating zero LiDAR returns"
 
-    missing = []
-    for obj in critical_objects:
-        track_id = obj.get("track_id")
-        if f"track_id={track_id}" not in caption:
-            missing.append(track_id)
+    if m:
+        count = int(m.group(1))
+        if "returns are strong" in text and count < 100:
+            return False, f"claims 'returns are strong' but cites only {count} LiDAR points"
+        if "is sparse" in text and count >= 100:
+            return False, f"claims 'sparse' but cites {count} LiDAR points"
+        return True, ""
 
-    if missing:
-        return False, f"critical objects {missing} listed in structured data but absent from caption text"
-    return True, ""
+    return None, "no LiDAR count found in sensor text"
 
 
-def check_counterfactual_appropriate(record: dict) -> tuple:
-    counterfactual = record.get("counterfactual", "")
+def check_attack_framing(record: dict) -> tuple:
+    note = record.get("attack_note", "")
     attack_type = record.get("attack_type")
+    clean = record.get("clean_score")
+    poisoned = record.get("poisoned_score")
+    threshold = record.get("threshold")
 
-    if not counterfactual:
-        return None, "missing counterfactual"
+    if not attack_type:
+        if note:
+            return False, "no attack_type but an attack note is present"
+        return True, ""
 
-    says_none_needed = "no counterfactual is needed" in counterfactual.lower()
+    if not note:
+        return False, f"attack_type='{attack_type}' but no attack note in caption"
 
-    if attack_type and says_none_needed:
-        return False, f"attack_type='{attack_type}' present but counterfactual says none needed"
-    if not attack_type and not says_none_needed:
-        if "designed accident scenario" in counterfactual:
-            return True, ""
-        return False, "no attack present but counterfactual is neither 'none needed' nor a designed-collision description"
+    if clean is None or poisoned is None or threshold is None:
+        return None, "missing score fields"
+
+    hid = clean > threshold and poisoned <= threshold
+    failed = poisoned > clean
+
+    if hid and "COMPROMISED" not in note:
+        return False, "attack hid a real detection but the caption does not warn of compromise"
+    if failed and "did not succeed" not in note:
+        return False, "attack increased the score (failed) but the caption does not say so"
     return True, ""
 
 
 def check_caption_completeness(record: dict) -> tuple:
     caption = record.get("full_caption", "")
-    parts = ["scene_description", "risk_explanation", "counterfactual", "action_plan"]
-
-    missing = []
-    for part in parts:
-        text = record.get(part, "")
-        if text and text not in caption:
-            missing.append(part)
-
+    parts = ["subject", "verdict", "evidence", "sensor_corroboration", "attack_note", "context"]
+    missing = [p for p in parts if record.get(p) and record.get(p) not in caption]
     if missing:
         return False, f"component(s) {missing} not present verbatim in full_caption"
     return True, ""
 
 
-def check_action_plan_internally_consistent(record: dict) -> tuple:
-    action = record.get("action_plan", "")
-    if not action:
-        return None, "missing action_plan"
-
-    numbers = extract_numbers(action)
-
-    if "brak" in action.lower() or "slow" in action.lower():
-        if len(numbers) >= 2 and numbers[0] <= numbers[1]:
-            return False, f"claims braking but speeds go {numbers[0]:.1f} -> {numbers[1]:.1f} (not decreasing)"
-        return True, ""
-    if "steady" in action.lower() or "no evasive" in action.lower() or "maintains" in action.lower():
-        return True, ""
-    if "yield" in action.lower() or "swerve" in action.lower() or "lateral" in action.lower():
-        return True, ""
-    if "No future ego state" in action:
-        return None, "no future state available"
-    return None, "unrecognized action phrasing"
+def check_no_implementation_leak(record: dict) -> tuple:
+    caption = record.get("full_caption", "")
+    leaks = ["No future ego state available", "unavailable for this window", "track_id=None"]
+    found = [l for l in leaks if l in caption]
+    if found:
+        return False, f"implementation detail leaked into caption: {found}"
+    return True, ""
 
 
 CHECKS = [
     ("risk_level_consistency", check_risk_level_consistency),
+    ("subject_named", check_subject_named),
+    ("subject_named_first", check_subject_named_first),
     ("score_quoted_correctly", check_score_quoted_correctly),
     ("threshold_quoted_correctly", check_threshold_quoted_correctly),
-    ("critical_objects_grounded", check_critical_objects_grounded),
-    ("counterfactual_appropriate", check_counterfactual_appropriate),
+    ("sensor_claim_consistent", check_sensor_claim_consistent),
+    ("attack_framing", check_attack_framing),
     ("caption_completeness", check_caption_completeness),
-    ("action_plan_consistent", check_action_plan_internally_consistent),
+    ("no_implementation_leak", check_no_implementation_leak),
 ]
 
 
