@@ -35,7 +35,7 @@ def get_town_from_scenario_name(scenario_name: str) -> str:
     return scenario_name.split("_")[0]
 
 
-def connect_carla(host: str = "localhost", port: int = 2000, timeout: float = 10.0):
+def connect_carla(host: str = "localhost", port: int = 2000, timeout: float = 120.0):
     import carla
 
     client = carla.Client(host, port)
@@ -47,7 +47,39 @@ def load_scenario_world(client, scenario_type_dir: Path, scenario_name: str, low
     import carla
 
     town = get_town_from_scenario_name(scenario_name)
-    world = client.load_world(town)
+
+    # Reloading a map that is already loaded is slow and is a common cause of
+    # simulator time-outs across consecutive runs. Reuse it and clear leftover
+    # actors instead.
+    world = client.get_world()
+    current = ""
+    try:
+        current = world.get_map().name
+    except RuntimeError:
+        current = ""
+
+    if town not in current:
+        world = client.load_world(town)
+    else:
+        for actor in world.get_actors().filter("vehicle.*"):
+            try:
+                if actor.is_alive:
+                    actor.set_autopilot(False)
+                    actor.destroy()
+            except RuntimeError:
+                pass
+        for actor in world.get_actors().filter("walker.*"):
+            try:
+                if actor.is_alive:
+                    actor.destroy()
+            except RuntimeError:
+                pass
+
+    for _ in range(5):
+        try:
+            world.tick()
+        except RuntimeError:
+            world.wait_for_tick()
 
     if low_resource_mode:
         settings = world.get_settings()

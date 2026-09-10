@@ -194,7 +194,9 @@ def serialize_attack_record(record) -> dict:
 
 
 def run_already_done(output_dir: Path, scenario_name: str, run_label: str) -> bool:
-    return (output_dir / f"{scenario_name}__{run_label}.json").exists()
+    f = output_dir / f"{scenario_name}__{run_label}.json"
+    # a zero-byte file is the residue of a crashed run, not a completed one
+    return f.exists() and f.stat().st_size > 0
 
 
 def save_run(output_dir: Path, scenario_name: str, run_label: str, attack_type, result: dict):
@@ -230,6 +232,8 @@ def main():
     parser.add_argument("--max_frames", type=int, default=60)
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--timeout", type=float, default=120.0,
+                        help="CARLA client timeout in seconds (world loading is slow)")
     parser.add_argument("--resume", action="store_true",
                         help="Skip runs whose output file already exists (use after a crash)")
     parser.add_argument("--attacks", type=str,
@@ -243,7 +247,7 @@ def main():
     from src.attacks.environment_attacks.universal_perturbation import inject_universal_perturbation
     from src.attacks.environment_attacks.sybil import inject_sybil
 
-    client = connect_carla(host=args.host, port=args.port)
+    client = connect_carla(host=args.host, port=args.port, timeout=args.timeout)
     traffic_manager = client.get_trafficmanager()
 
     registry = {
