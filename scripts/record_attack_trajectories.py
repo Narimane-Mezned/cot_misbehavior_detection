@@ -12,8 +12,9 @@ from src.data_pipeline.carla_replay import (
 )
 
 ATTACK_START_FRAME = 10
-ATTACK_DURATION_FRAMES = 30
-FIXED_DELTA_SECONDS = 0.05
+ATTACK_DURATION_FRAMES = None  # None = keep agents under Traffic Manager
+                               # control until the end of the recording
+FIXED_DELTA_SECONDS = 0.1
 
 SPAWNED_ACTOR_KEYS = ("obstacle_actor_ids", "emergency_actor_ids", "sybil_actor_ids")
 
@@ -151,7 +152,11 @@ def run_replay(client, scenario_type_dir, scenario_name, traffic_manager, mode,
                 release_agents_to_traffic_manager(replay_state, released, traffic_manager)
                 print(f"    [control] released the same {len(released)} agent(s), no attack")
 
-        attack_window_active = ATTACK_START_FRAME <= frame_idx < ATTACK_START_FRAME + ATTACK_DURATION_FRAMES
+        if ATTACK_DURATION_FRAMES is None:
+            attack_window_active = frame_idx >= ATTACK_START_FRAME
+        else:
+            attack_window_active = (ATTACK_START_FRAME <= frame_idx
+                                    < ATTACK_START_FRAME + ATTACK_DURATION_FRAMES)
         skip = released if attack_window_active else set()
 
         apply_frame_state(replay_state, frame_idx, skip_track_ids=skip)
@@ -207,6 +212,7 @@ def save_run(output_dir: Path, scenario_name: str, run_label: str, attack_type, 
         "fixed_delta_seconds": FIXED_DELTA_SECONDS,
         "attack_start_frame": ATTACK_START_FRAME,
         "attack_duration_frames": ATTACK_DURATION_FRAMES,
+        "attack_active_until_end": ATTACK_DURATION_FRAMES is None,
         "meta": result["meta"],
         "released_track_ids": result["released_track_ids"],
         "spawned_actor_ids": result["spawned_actor_ids"],
@@ -229,7 +235,8 @@ def main():
     parser.add_argument("--data_root", type=str, default="data/raw")
     parser.add_argument("--scenario_type", type=str, default="type1_subtype1_normal")
     parser.add_argument("--num_scenarios", type=int, default=3)
-    parser.add_argument("--max_frames", type=int, default=60)
+    parser.add_argument("--max_frames", type=int, default=0,
+                        help="0 = use every frame in the scenario")
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=120.0,
@@ -281,7 +288,7 @@ def main():
           print("  [clean] pure replay, no release, no attack...")
           try:
             result = run_replay(client, scenario_type_dir, scenario_name, traffic_manager,
-                                  mode="clean", max_frames=args.max_frames)
+                                  mode="clean", max_frames=(args.max_frames or None))
             out = save_run(output_dir, scenario_name, "clean", None, result)
             print(f"  [clean] {len(result['trajectory'])} frames -> {out.name}")
           except Exception as e:
@@ -303,7 +310,7 @@ def main():
                 attacked = run_replay(client, scenario_type_dir, scenario_name, traffic_manager,
                                         mode="attacked", attack_fn=attack_fn,
                                         attack_kwargs=attack_kwargs, release_all=release_all,
-                                        max_frames=args.max_frames)
+                                        max_frames=(args.max_frames or None))
                 out = save_run(output_dir, scenario_name, f"{attack_name}__attacked",
                                  attack_name, attacked)
                 print(f"  [{attack_name}] {len(attacked['trajectory'])} frames -> {out.name}")
@@ -322,7 +329,7 @@ def main():
                 control = run_replay(client, scenario_type_dir, scenario_name, traffic_manager,
                                      mode="control",
                                      release_track_ids=attacked["released_track_ids"],
-                                     max_frames=args.max_frames)
+                                     max_frames=(args.max_frames or None))
                 out = save_run(output_dir, scenario_name, f"{attack_name}__control",
                                None, control)
                 print(f"  [{attack_name}] {len(control['trajectory'])} frames -> {out.name}")
