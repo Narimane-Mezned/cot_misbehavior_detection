@@ -12,8 +12,8 @@ from src.data_pipeline.carla_replay import (
 )
 
 ATTACK_START_FRAME = 10
-ATTACK_DURATION_FRAMES = None  # None = keep agents under Traffic Manager
-                               # control until the end of the recording
+ATTACK_DURATION_FRAMES = None  
+                               
 FIXED_DELTA_SECONDS = 0.1
 
 SPAWNED_ACTOR_KEYS = ("obstacle_actor_ids", "emergency_actor_ids", "sybil_actor_ids")
@@ -95,13 +95,16 @@ def apply_perturbation_offset(replay_state, perturbation: dict):
 
 
 def release_agents_to_traffic_manager(replay_state, track_ids, traffic_manager):
+    
+    from src.attacks.environment_attacks.attack_common import release_to_autopilot
+
     for track_id in track_ids:
         agent = replay_state.agents.get(track_id)
         if agent is None or agent.actor is None:
             continue
         try:
             if agent.actor.is_alive and agent.actor.type_id.startswith("vehicle."):
-                agent.actor.set_autopilot(True, traffic_manager.get_port())
+                release_to_autopilot(replay_state, track_id, traffic_manager)
         except RuntimeError:
             continue
 
