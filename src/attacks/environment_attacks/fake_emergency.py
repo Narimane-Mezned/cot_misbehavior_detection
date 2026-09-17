@@ -8,13 +8,13 @@ from src.attacks.environment_attacks.attack_record import AttackRecord
 from src.attacks.environment_attacks.attack_common import (
     select_unique_lane_targets,
     offset_location_along_heading,
-    release_to_autopilot,
+    enforced_behaviour,
 )
 
 DEFAULT_DURATION_FRAMES = 30
 DEFAULT_COUNT = 1
 DEFAULT_SPEED_MS = 15.0
-SPAWN_BEHIND_OFFSET_METERS = 25.0
+SPAWN_BEHIND_OFFSET_METERS = 15.0
 EMERGENCY_BLUEPRINT_FILTER = "vehicle.dodge.charger_police"
 
 
@@ -78,7 +78,6 @@ def inject_fake_emergency(
 
         created_ev_ids.append(ev_actor.id)
         affected_track_ids.append(track_id)
-        release_to_autopilot(replay_state, track_id, traffic_manager)
 
     if not created_ev_ids:
         return AttackRecord(
@@ -115,6 +114,10 @@ def inject_fake_emergency(
         description=description,
         physical_inconsistency=physical_inconsistency,
         metadata={
+            "enforced_behaviour": enforced_behaviour(
+                affected_track_ids, 1.0,
+                "target agents yield to 1.0 m/s, reproducing the "
+                "slowDown(vehicle, 1.0, 3) override of the original SUMO attack"),
             "count": count,
             "speed_ms": speed_ms,
             "emergency_actor_ids": created_ev_ids,

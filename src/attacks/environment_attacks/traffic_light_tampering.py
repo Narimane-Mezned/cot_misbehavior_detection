@@ -6,6 +6,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.attacks.environment_attacks.attack_record import AttackRecord
+from src.attacks.environment_attacks.attack_common import (
+    select_unique_lane_targets,
+    enforced_behaviour,
+)
 
 DEFAULT_DURATION_FRAMES = 30
 DEFAULT_RATIO = 1.0
@@ -30,6 +34,9 @@ def inject_traffic_light_tampering(
             physical_inconsistency="none (no traffic lights present)",
             metadata={"failed": True},
         )
+
+    targets = select_unique_lane_targets(replay_state, count=2)
+    affected_track_ids = [t[0] for t in targets]
 
     num_target = max(1, int(len(all_lights) * ratio))
     target_lights = random.sample(list(all_lights), num_target)
@@ -59,12 +66,17 @@ def inject_traffic_light_tampering(
 
     return AttackRecord(
         attack_type="traffic_light_tampering",
-        affected_track_ids=[],
+        affected_track_ids=affected_track_ids,
         start_frame=start_frame_idx,
         end_frame=end_frame,
         description=description,
         physical_inconsistency=physical_inconsistency,
         metadata={
+            "enforced_behaviour": enforced_behaviour(
+                affected_track_ids, 0.0,
+                "agents approaching the tampered signals are brought to a "
+                "standstill, the braking response the falsified red phase "
+                "induces in the original SUMO attack"),
             "ratio": ratio,
             "target_light_ids": [light.id for light in target_lights],
             "original_states": {lid: str(state) for lid, state in original_states.items()},

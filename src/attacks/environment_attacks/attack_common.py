@@ -87,3 +87,36 @@ def offset_location_along_heading(location, yaw_radians: float, distance: float)
     dx = math.cos(yaw_radians) * distance
     dy = math.sin(yaw_radians) * distance
     return carla.Location(x=location.x + dx, y=location.y + dy, z=location.z)
+
+def enforce_speed(replay_state, track_id: int, target_speed_ms: float):
+    import carla
+
+    agent = replay_state.agents.get(track_id)
+    if agent is None or agent.actor is None:
+        return False
+
+    try:
+        if not agent.actor.is_alive:
+            return False
+        transform = agent.actor.get_transform()
+        forward = transform.get_forward_vector()
+        agent.actor.set_target_velocity(
+            carla.Vector3D(
+                x=forward.x * target_speed_ms,
+                y=forward.y * target_speed_ms,
+                z=0.0,
+            )
+        )
+        if target_speed_ms <= 0.01:
+            agent.actor.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0))
+        return True
+    except RuntimeError:
+        return False
+
+
+def enforced_behaviour(track_ids, target_speed_ms: float, description: str):
+    return {
+        "track_ids": list(track_ids),
+        "target_speed_ms": float(target_speed_ms),
+        "description": description,
+    }

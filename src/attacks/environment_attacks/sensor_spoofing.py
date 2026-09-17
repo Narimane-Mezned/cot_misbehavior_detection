@@ -9,12 +9,12 @@ from src.attacks.environment_attacks.attack_common import (
     select_unique_lane_targets,
     spawn_static_obstacle,
     offset_location_along_heading,
-    release_to_autopilot,
+    enforced_behaviour,
 )
 
 DEFAULT_DURATION_FRAMES = 30
 DEFAULT_NUM_OBSTACLES = 2
-OBSTACLE_OFFSET_METERS = 25.0
+OBSTACLE_OFFSET_METERS = 15.0
 
 
 def inject_sensor_spoofing(
@@ -53,7 +53,6 @@ def inject_sensor_spoofing(
         if obstacle_actor is not None:
             obstacle_actors.append(obstacle_actor.id)
             affected_track_ids.append(track_id)
-            release_to_autopilot(replay_state, track_id, traffic_manager)
 
     if not obstacle_actors:
         return AttackRecord(
@@ -90,6 +89,10 @@ def inject_sensor_spoofing(
         description=description,
         physical_inconsistency=physical_inconsistency,
         metadata={
+            "enforced_behaviour": enforced_behaviour(
+                affected_track_ids, 0.0,
+                "target agents are brought to a standstill, reproducing the "
+                "setSpeed(vehicle, 0) override of the original SUMO attack"),
             "num_obstacles": num_obstacles,
             "obstacle_actor_ids": obstacle_actors,
             "obstacle_offset_m": OBSTACLE_OFFSET_METERS,

@@ -6,6 +6,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.attacks.environment_attacks.attack_record import AttackRecord
+from src.attacks.environment_attacks.attack_common import (
+    get_agent_speed,
+    enforced_behaviour,
+)
 
 DEFAULT_DURATION_FRAMES = 30
 DEFAULT_COUNT = 5
@@ -79,6 +83,7 @@ def inject_sybil(
         )
 
     end_frame = min(start_frame_idx + duration_frames, len(replay_state.frame_files) - 1)
+    crawl_speed_ms = max(0.5, get_agent_speed(attacker_agent) * 0.15)
 
     description = (
         f"Vehicle track_id={attacker_track_id}'s identity (same vehicle type, spawned near its position) "
@@ -102,6 +107,11 @@ def inject_sybil(
         description=description,
         physical_inconsistency=physical_inconsistency,
         metadata={
+            "enforced_behaviour": enforced_behaviour(
+                [attacker_track_id], crawl_speed_ms,
+                "the cloned vehicle is forced to a crawl, reproducing the "
+                "slowDown(vehicle, 0.15 * max_speed, 20) override of the "
+                "original SUMO attack"),
             "attacker_track_id": attacker_track_id,
             "sybil_actor_ids": created_sybil_ids,
             "count": count,

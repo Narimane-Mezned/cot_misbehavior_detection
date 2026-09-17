@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.attacks.environment_attacks.attack_record import AttackRecord
+from src.attacks.environment_attacks.attack_common import enforced_behaviour
 
 DEFAULT_DURATION_FRAMES = 30
 DEFAULT_EPSILON = 0.3
@@ -82,6 +83,11 @@ def inject_universal_perturbation(
         description=description,
         physical_inconsistency=physical_inconsistency,
         metadata={
+            "enforced_behaviour": enforced_behaviour(
+                affected_track_ids, 0.0,
+                "every tracked agent is brought to a standstill, reproducing "
+                "the slowDown(vehicle, 0.0, 20) override of the original SUMO "
+                "attack"),
             "perturbation": perturbation,
             "epsilon": epsilon,
             "scale_position": scale_position,

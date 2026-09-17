@@ -12,8 +12,8 @@ from src.data_pipeline.carla_replay import (
 )
 
 ATTACK_START_FRAME = 10
-ATTACK_DURATION_FRAMES = None  
-                               
+ATTACK_DURATION_FRAMES = None  # None = keep agents under Traffic Manager
+                               # control until the end of the recording
 FIXED_DELTA_SECONDS = 0.1
 
 SPAWNED_ACTOR_KEYS = ("obstacle_actor_ids", "emergency_actor_ids", "sybil_actor_ids")
@@ -94,19 +94,14 @@ def apply_perturbation_offset(replay_state, perturbation: dict):
             continue
 
 
-def release_agents_to_traffic_manager(replay_state, track_ids, traffic_manager):
-    
-    from src.attacks.environment_attacks.attack_common import release_to_autopilot
+def apply_enforced_behaviour(replay_state, behaviour):
+    from src.attacks.environment_attacks.attack_common import enforce_speed
 
-    for track_id in track_ids:
-        agent = replay_state.agents.get(track_id)
-        if agent is None or agent.actor is None:
-            continue
-        try:
-            if agent.actor.is_alive and agent.actor.type_id.startswith("vehicle."):
-                release_to_autopilot(replay_state, track_id, traffic_manager)
-        except RuntimeError:
-            continue
+    if not behaviour:
+        return
+    speed = behaviour.get("target_speed_ms", 0.0)
+    for track_id in behaviour.get("track_ids", []):
+        enforce_speed(replay_state, track_id, speed)
 
 
 def run_replay(client, scenario_type_dir, scenario_name, traffic_manager, mode,
@@ -125,6 +120,7 @@ def run_replay(client, scenario_type_dir, scenario_name, traffic_manager, mode,
         n_frames = min(n_frames, max_frames)
 
     attack_record = None
+    behaviour = None
     spawned_actor_ids = []
     released = set(release_track_ids or [])
     perturbation = None
@@ -145,15 +141,14 @@ def run_replay(client, scenario_type_dir, scenario_name, traffic_manager, mode,
 
                 metadata = getattr(attack_record, "metadata", {}) or {}
                 perturbation = metadata.get("perturbation")
+                behaviour = metadata.get("enforced_behaviour")
 
-                release_agents_to_traffic_manager(replay_state, released, traffic_manager)
                 print(f"    [attack] injected at frame {frame_idx}; "
-                      f"released {len(released)} agent(s); "
+                      f"{len(released)} agent(s) under attack control; "
                       f"spawned {len(spawned_actor_ids)} actor(s)")
 
             elif mode == "control" and released:
-                release_agents_to_traffic_manager(replay_state, released, traffic_manager)
-                print(f"    [control] released the same {len(released)} agent(s), no attack")
+                print(f"    [control] same {len(released)} agent(s) held out of replay, no attack")
 
         if ATTACK_DURATION_FRAMES is None:
             attack_window_active = frame_idx >= ATTACK_START_FRAME
@@ -164,8 +159,11 @@ def run_replay(client, scenario_type_dir, scenario_name, traffic_manager, mode,
 
         apply_frame_state(replay_state, frame_idx, skip_track_ids=skip)
 
-        if mode == "attacked" and perturbation is not None and attack_window_active:
-            apply_perturbation_offset(replay_state, perturbation)
+        if mode == "attacked" and attack_window_active:
+            if behaviour is not None:
+                apply_enforced_behaviour(replay_state, behaviour)
+            if perturbation is not None:
+                apply_perturbation_offset(replay_state, perturbation)
 
         world.tick()
         trajectory.append(record_frame(world, replay_state, frame_idx, spawned_actor_ids))
