@@ -72,13 +72,17 @@ def spawn_static_obstacle(replay_state, location, blueprint_filter: str = "vehic
     blueprint_library = world.get_blueprint_library()
     bp = blueprint_library.filter(blueprint_filter)[0]
 
-    transform = carla.Transform(location, carla.Rotation())
-    actor = world.try_spawn_actor(bp, transform)
+    for z_offset in (0.0, 0.5, 1.0):
+        transform = carla.Transform(
+            carla.Location(x=location.x, y=location.y, z=location.z + z_offset),
+            carla.Rotation(),
+        )
+        actor = world.try_spawn_actor(bp, transform)
+        if actor is not None:
+            actor.set_simulate_physics(False)
+            return actor
 
-    if actor is not None:
-        actor.set_simulate_physics(False)
-
-    return actor
+    return None
 
 
 def offset_location_along_heading(location, yaw_radians: float, distance: float):
@@ -97,6 +101,8 @@ def enforce_speed(replay_state, track_id: int, target_speed_ms: float):
 
     try:
         if not agent.actor.is_alive:
+            return False
+        if not agent.actor.type_id.startswith("vehicle."):
             return False
         transform = agent.actor.get_transform()
         forward = transform.get_forward_vector()

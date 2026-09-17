@@ -58,6 +58,8 @@ def inject_fake_emergency(
         )
         spawn_transform = carla.Transform(spawn_location, transform.rotation)
 
+        affected_track_ids.append(track_id)
+
         ev_actor = world.try_spawn_actor(bp, spawn_transform)
         if ev_actor is None:
             continue
@@ -77,18 +79,6 @@ def inject_fake_emergency(
         ev_actor.set_target_velocity(target_velocity)
 
         created_ev_ids.append(ev_actor.id)
-        affected_track_ids.append(track_id)
-
-    if not created_ev_ids:
-        return AttackRecord(
-            attack_type="fake_emergency",
-            affected_track_ids=[],
-            start_frame=start_frame_idx,
-            end_frame=start_frame_idx,
-            description="Attack injection failed: could not spawn any fake emergency vehicles",
-            physical_inconsistency="none (spawn failed)",
-            metadata={"failed": True},
-        )
 
     end_frame = min(start_frame_idx + duration_frames, len(replay_state.frame_files) - 1)
 

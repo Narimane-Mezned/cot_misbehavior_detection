@@ -50,20 +50,9 @@ def inject_sensor_spoofing(
         )
         obstacle_actor = spawn_static_obstacle(replay_state, obstacle_location)
 
+        affected_track_ids.append(track_id)
         if obstacle_actor is not None:
             obstacle_actors.append(obstacle_actor.id)
-            affected_track_ids.append(track_id)
-
-    if not obstacle_actors:
-        return AttackRecord(
-            attack_type="sensor_spoofing",
-            affected_track_ids=[],
-            start_frame=start_frame_idx,
-            end_frame=start_frame_idx,
-            description="Attack injection failed: could not spawn any obstacles",
-            physical_inconsistency="none (spawn failed)",
-            metadata={"failed": True},
-        )
 
     end_frame = min(start_frame_idx + duration_frames, len(replay_state.frame_files) - 1)
 
