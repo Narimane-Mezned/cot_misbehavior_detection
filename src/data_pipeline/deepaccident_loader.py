@@ -113,6 +113,9 @@ def list_scenarios(scenario_type_dir: Path) -> list[str]:
     return sorted(d.name for d in label_dir.iterdir() if d.is_dir())
 
 
+NEIGHBOUR_RADIUS_METERS = 50.0
+
+
 def agent_feature_vector(obj: dict, ego_obj: dict) -> list[float]:
     distance_to_ego = math.sqrt((obj["x"] - ego_obj["x"]) ** 2 + (obj["y"] - ego_obj["y"]) ** 2)
     return [
@@ -127,7 +130,31 @@ def agent_feature_vector(obj: dict, ego_obj: dict) -> list[float]:
     ]
 
 
-def build_agent_sequences(scenario_type_dir: Path, scenario_name: str) -> dict[int, np.ndarray]:
+def neighbour_context(obj: dict, all_objects: list, radius: float = NEIGHBOUR_RADIUS_METERS):
+    speed = math.sqrt(obj["vx"] ** 2 + obj["vy"] ** 2)
+
+    neighbour_speeds = []
+    for other in all_objects:
+        if other["track_id"] == obj["track_id"]:
+            continue
+        if other["track_id"] == UNTRACKED_TRACK_ID:
+            continue
+        separation = math.sqrt((other["x"] - obj["x"]) ** 2 + (other["y"] - obj["y"]) ** 2)
+        if separation <= radius:
+            neighbour_speeds.append(math.sqrt(other["vx"] ** 2 + other["vy"] ** 2))
+
+    if not neighbour_speeds:
+        return [0.0, 0.0]
+
+    return [speed - float(np.mean(neighbour_speeds)), float(len(neighbour_speeds))]
+
+
+def agent_feature_vector_extended(obj: dict, ego_obj: dict, all_objects: list) -> list[float]:
+    return agent_feature_vector(obj, ego_obj) + neighbour_context(obj, all_objects)
+
+
+def build_agent_sequences(scenario_type_dir: Path, scenario_name: str,
+                         with_neighbour_context: bool = False) -> dict[int, np.ndarray]:
     label_dir = Path(scenario_type_dir) / "ego_vehicle" / "label" / scenario_name
     frame_files = sorted(label_dir.glob("*.txt"), key=lambda p: get_frame_number(p.name))
 
@@ -144,7 +171,11 @@ def build_agent_sequences(scenario_type_dir: Path, scenario_name: str) -> dict[i
                 continue
             if obj["track_id"] == UNTRACKED_TRACK_ID:
                 continue
-            per_track_features[obj["track_id"]].append(agent_feature_vector(obj, ego_obj))
+            if with_neighbour_context:
+                vec = agent_feature_vector_extended(obj, ego_obj, parsed["objects"])
+            else:
+                vec = agent_feature_vector(obj, ego_obj)
+            per_track_features[obj["track_id"]].append(vec)
 
     return {
         track_id: np.array(feats, dtype=np.float32)
@@ -153,8 +184,10 @@ def build_agent_sequences(scenario_type_dir: Path, scenario_name: str) -> dict[i
 
 
 class DeepAccidentBenignDataset(Dataset):
-    def __init__(self, data_root: Path, seq_len: int, min_track_frames: int | None = None):
+    def __init__(self, data_root: Path, seq_len: int, min_track_frames: int | None = None,
+                 with_neighbour_context: bool = False):
         self.seq_len = seq_len
+        self.with_neighbour_context = with_neighbour_context
         min_track_frames = min_track_frames or seq_len
         self.sequences = []
 
@@ -164,7 +197,9 @@ class DeepAccidentBenignDataset(Dataset):
         for scenario_type_dir in normal_dirs:
             scenario_names = list_scenarios(scenario_type_dir)
             for scenario_name in scenario_names:
-                agent_sequences = build_agent_sequences(scenario_type_dir, scenario_name)
+                agent_sequences = build_agent_sequences(
+                    scenario_type_dir, scenario_name,
+                    with_neighbour_context=with_neighbour_context)
                 for track_id, full_seq in agent_sequences.items():
                     if len(full_seq) < min_track_frames:
                         continue

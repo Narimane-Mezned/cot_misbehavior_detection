@@ -1,4 +1,5 @@
 import json
+import time
 import math
 import sys
 from pathlib import Path
@@ -240,8 +241,12 @@ def main():
                         help="0 = use every frame in the scenario")
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=2000)
-    parser.add_argument("--timeout", type=float, default=120.0,
+    parser.add_argument("--timeout", type=float, default=300.0,
                         help="CARLA client timeout in seconds (world loading is slow)")
+    parser.add_argument("--scenario", type=str, default=None,
+                        help="run a single named scenario instead of the first N")
+    parser.add_argument("--scenario_index", type=int, default=None,
+                        help="run only the scenario at this index (0-based)")
     parser.add_argument("--resume", action="store_true",
                         help="Skip runs whose output file already exists (use after a crash)")
     parser.add_argument("--attacks", type=str,
@@ -255,7 +260,21 @@ def main():
     from src.attacks.environment_attacks.universal_perturbation import inject_universal_perturbation
     from src.attacks.environment_attacks.sybil import inject_sybil
 
-    client = connect_carla(host=args.host, port=args.port, timeout=args.timeout)
+    client = None
+    for attempt in range(1, 4):
+        try:
+            client = connect_carla(host=args.host, port=args.port, timeout=args.timeout)
+            client.get_server_version()
+            break
+        except Exception as exc:
+            print(f"[connect] attempt {attempt}/3 failed: {type(exc).__name__}: {exc}")
+            if attempt < 3:
+                print(f"[connect] retrying in 10s")
+                time.sleep(10)
+    if client is None:
+        print("[abort] could not reach the simulator; is it running on "
+              f"{args.host}:{args.port}?")
+        return
     traffic_manager = client.get_trafficmanager()
 
     registry = {
@@ -269,7 +288,21 @@ def main():
 
     requested = [a.strip() for a in args.attacks.split(",") if a.strip()]
     scenario_type_dir = REPO_ROOT / args.data_root / args.scenario_type
-    scenario_names = list_scenarios(scenario_type_dir)[:args.num_scenarios]
+    all_scenarios = list_scenarios(scenario_type_dir)
+    if args.scenario is not None:
+        if args.scenario not in all_scenarios:
+            print(f"[abort] scenario {args.scenario} not found in {scenario_type_dir}")
+            print(f"[abort] available: {all_scenarios[:10]}")
+            return
+        scenario_names = [args.scenario]
+    elif args.scenario_index is not None:
+        if args.scenario_index >= len(all_scenarios):
+            print(f"[abort] index {args.scenario_index} out of range "
+                  f"({len(all_scenarios)} scenarios available)")
+            return
+        scenario_names = [all_scenarios[args.scenario_index]]
+    else:
+        scenario_names = all_scenarios[:args.num_scenarios]
 
     output_dir = REPO_ROOT / "data" / "attack_trajectories"
     output_dir.mkdir(parents=True, exist_ok=True)
