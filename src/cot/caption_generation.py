@@ -23,6 +23,7 @@ FEATURE_PLAIN = {
 MOTION_FEATURES = {"x", "y", "vx", "vy", "yaw"}
 BINARY_FEATURES = {"is_camera_visible"}
 SENSOR_FEATURES = {"point_count", "is_camera_visible"}
+RELATIVE_FEATURES = {"distance_to_ego"}
 
 
 @dataclass
@@ -64,7 +65,8 @@ def describe_subject(subject: Optional[dict], subject_track_id: int, ego_obj: di
             f"{distance:.1f}m from ego.")
 
 
-def state_verdict(anomaly_score: float, threshold: float, seed: tuple) -> tuple:
+def state_verdict(anomaly_score: float, threshold: float, seed: tuple,
+                  agent_noun: str = "vehicle") -> tuple:
     ratio = anomaly_score / threshold if threshold > 0 else 0.0
 
     if anomaly_score <= threshold:
@@ -88,7 +90,7 @@ def state_verdict(anomaly_score: float, threshold: float, seed: tuple) -> tuple:
         options = [
             f"Flagged as strongly suspicious: deviation score {anomaly_score:.3f} is "
             f"{ratio:.1f}x the calibrated threshold ({threshold:.3f}).",
-            f"Strong indication of misreported state -- {anomaly_score:.3f}, "
+            f"Strong indication of a misreported {agent_noun} state -- {anomaly_score:.3f}, "
             f"{ratio:.1f}x the threshold of {threshold:.3f}.",
         ]
 
@@ -98,11 +100,16 @@ def state_verdict(anomaly_score: float, threshold: float, seed: tuple) -> tuple:
 CLOSE_TRACKING_MAX_RESIDUAL = 1.5
 
 
-def describe_evidence(feature_errors: Optional[List[float]], is_flagged: bool = True, top_k: int = 3) -> tuple:
+def describe_evidence(feature_errors: Optional[List[float]], is_flagged: bool = True, top_k: int = 3,
+                      agent_noun: str = "vehicle", suppress_features: Optional[set] = None,
+                      ego_speed_changed: bool = False) -> tuple:
     if feature_errors is None or len(feature_errors) != len(FEATURE_NAMES):
         return ("", [])
 
-    pairs = list(zip(FEATURE_NAMES, list(feature_errors)))
+    pairs = [(n, e) for n, e in zip(FEATURE_NAMES, list(feature_errors))
+             if not (suppress_features and n in suppress_features)]
+    if not pairs:
+        return ("", [])
     pairs.sort(key=lambda p: p[1], reverse=True)
     top = pairs[:top_k]
     largest_name, largest_err = top[0]
@@ -129,21 +136,28 @@ def describe_evidence(feature_errors: Optional[List[float]], is_flagged: bool = 
 
     dominant = top[0][0]
     if dominant in MOTION_FEATURES:
-        lead = ("The deviation comes from motion the model could not predict from this "
-                "vehicle's own preceding trajectory")
+        lead = (f"The deviation comes from motion the model could not predict from this "
+                f"{agent_noun}'s own preceding trajectory")
     elif dominant in SENSOR_FEATURES:
-        lead = ("The deviation is in how this vehicle's sensor signature changed across the "
-                "window rather than in its motion -- the readings varied far more than "
-                "predicted")
+        lead = (f"The deviation is in how this {agent_noun}'s sensor signature changed across "
+                f"the window rather than in its motion -- the readings varied far more than "
+                f"predicted")
     else:
         lead = "The deviation comes from"
 
+    caveat = ""
+    if dominant in RELATIVE_FEATURES and ego_speed_changed:
+        caveat = (f" Distance to ego is a relative quantity and the ego vehicle's own speed "
+                  f"changed over this window, so this residual is not attributable to the "
+                  f"{agent_noun} alone.")
+
     return (f"{lead}: {', '.join(parts)} -- these are per-feature ratios, not the "
-            f"aggregate's ratio to threshold.", [name for name, _ in top])
+            f"aggregate's ratio to threshold.{caveat}", [name for name, _ in top])
 
 
 SPARSE_LIDAR_THRESHOLD = 50
 STRONG_LIDAR_THRESHOLD = 100
+SMALL_ROAD_USERS = {"pedestrian", "cyclist", "motorcycle", "bicycle"}
 LIDAR_MAX_RANGE_M = 80.0
 SPARSE_EXPECTED_BEYOND_M = 30.0
 LIDAR_CONFIDENT_RANGE_M = 50.0
@@ -151,7 +165,8 @@ LIDAR_CONFIDENT_RANGE_M = 50.0
 
 def describe_sensor_corroboration(subject: Optional[dict], ego_obj: dict,
                                   top_features: Optional[List[str]] = None,
-                                  is_flagged: bool = True) -> str:
+                                  is_flagged: bool = True,
+                                  category: str = "vehicle") -> str:
     if subject is None:
         return ""
 
@@ -170,6 +185,9 @@ def describe_sensor_corroboration(subject: Optional[dict], ego_obj: dict,
         if distance > LIDAR_CONFIDENT_RANGE_M:
             hedge = (f"toward the edge of reliable LiDAR range, so this may reflect range "
                      f"limits rather than a genuine inconsistency")
+        elif category in SMALL_ROAD_USERS:
+            hedge = (f"within nominal range, though a {category} returns few points and may "
+                     f"go undetected at this distance, so absence is weak evidence")
         else:
             hedge = (f"well within reliable range, so this object's claimed presence is "
                      f"unsupported by direct observation")
@@ -312,17 +330,41 @@ def generate_cot_caption(
     seed = (round(anomaly_score, 4), subject_track_id or 0)
 
     true_score = clean_score if clean_score is not None else anomaly_score
-    risk_level, verdict_text = state_verdict(true_score, threshold, seed)
+
+    category = (subject or {}).get("category", "vehicle")
+    agent_noun = category if category in SMALL_ROAD_USERS else "vehicle"
+
+    subject_distance = None
+    if subject is not None and ego_obj is not None:
+        subject_distance = math.sqrt((subject["x"] - ego_obj["x"]) ** 2
+                                     + (subject["y"] - ego_obj["y"]) ** 2)
+
+    suppress = set()
+    if (subject_distance is not None and subject_distance > LIDAR_MAX_RANGE_M
+            and (subject or {}).get("point_count", 0) == 0):
+        suppress.add("point_count")
+
+    risk_level, verdict_text = state_verdict(true_score, threshold, seed, agent_noun)
 
     if clean_score is not None and poisoned_score is not None and clean_score != poisoned_score:
         verdict_text = "True assessment (untampered baseline): " + verdict_text
 
-    evidence_text, top_features = describe_evidence(feature_errors, is_flagged=(true_score > threshold))
+    ego_speed_changed = False
+    if ego_future_obj is not None and ego_obj is not None:
+        now = math.sqrt(ego_obj["vx"] ** 2 + ego_obj["vy"] ** 2)
+        later = math.sqrt(ego_future_obj["vx"] ** 2 + ego_future_obj["vy"] ** 2)
+        ego_speed_changed = abs(later - now) > 1.0
+
+    evidence_text, top_features = describe_evidence(
+        feature_errors, is_flagged=(true_score > threshold),
+        agent_noun=agent_noun, suppress_features=suppress,
+        ego_speed_changed=ego_speed_changed)
 
     if evidence_text and clean_score is not None and poisoned_score is not None:
         evidence_text = evidence_text
     sensor_text = describe_sensor_corroboration(subject, ego_obj, top_features,
-                                                is_flagged=(true_score > threshold))
+                                                is_flagged=(true_score > threshold),
+                                                category=category)
     context_text = describe_context(meta, max(0, len(objects) - 1))
     attack_text, override_level = describe_attack(attack_record, clean_score, poisoned_score, threshold)
     ego_text = describe_ego_response(ego_obj, ego_future_obj)
