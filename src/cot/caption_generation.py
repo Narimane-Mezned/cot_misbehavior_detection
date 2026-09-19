@@ -143,6 +143,7 @@ def describe_evidence(feature_errors: Optional[List[float]], is_flagged: bool = 
 
 
 SPARSE_LIDAR_THRESHOLD = 50
+STRONG_LIDAR_THRESHOLD = 100
 LIDAR_MAX_RANGE_M = 80.0
 SPARSE_EXPECTED_BEYOND_M = 30.0
 LIDAR_CONFIDENT_RANGE_M = 50.0
@@ -192,7 +193,9 @@ def describe_sensor_corroboration(subject: Optional[dict], ego_obj: dict,
                 f"be expected.{tail}")
 
     if not camera_visible and distance < 30.0:
-        return (f"Sensor corroboration is inconsistent: LiDAR returns are strong "
+        strength = ("strong" if point_count >= STRONG_LIDAR_THRESHOLD
+                    else "clearly present")
+        return (f"Sensor corroboration is inconsistent: LiDAR returns are {strength} "
                 f"({point_count} points) yet no camera sees this object at only "
                 f"{distance:.1f}m -- the two sensing modalities disagree.")
 

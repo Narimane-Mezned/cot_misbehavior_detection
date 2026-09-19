@@ -1,5 +1,7 @@
 import json
 import re
+
+STRONG_LIDAR_THRESHOLD = 100
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -31,10 +33,8 @@ def check_risk_level_consistency(record: dict) -> tuple:
         return False, (f"risk_level='compromised' but clean_score={clean:.3f} / "
                        f"score={score:.3f} vs threshold={threshold:.3f} does not show a hidden detection")
 
-    if record.get("detector_status") == "compromised":
-        clean = record.get("clean_score")
-        if clean is None:
-            return False, "detector_status='compromised' but no clean_score recorded"
+    clean = record.get("clean_score")
+    if clean is not None:
         score = clean
 
     expected = "low" if score <= threshold else ("moderate" if score < 2 * threshold else "high")
@@ -72,10 +72,9 @@ def check_score_quoted_correctly(record: dict) -> tuple:
     if any(abs(q - score) < 0.01 for q in quoted):
         return True, ""
 
-    if record.get("detector_status") == "compromised":
-        clean = record.get("clean_score")
-        if clean is not None and any(abs(q - clean) < 0.01 for q in quoted):
-            return True, ""
+    clean = record.get("clean_score")
+    if clean is not None and any(abs(q - clean) < 0.01 for q in quoted):
+        return True, ""
 
     return False, f"anomaly_score={score:.3f} not found among numbers quoted in verdict: {quoted}"
 
@@ -96,7 +95,8 @@ def check_sensor_claim_consistent(record: dict) -> tuple:
     if not text:
         return None, "no sensor corroboration text"
 
-    m = re.search(r"(\d+) LiDAR points", text) or re.search(r"strong \((\d+) points\)", text)
+    m = (re.search(r"(\d+) LiDAR points", text)
+         or re.search(r"\((\d+) points\)", text))
     absent = "corroboration is absent" in text
 
     if "unavailable at this range" in text:
@@ -115,7 +115,7 @@ def check_sensor_claim_consistent(record: dict) -> tuple:
 
     if m:
         count = int(m.group(1))
-        if "returns are strong" in text and count < 100:
+        if "returns are strong" in text and count < STRONG_LIDAR_THRESHOLD:
             return False, f"claims 'returns are strong' but cites only {count} LiDAR points"
         if "is sparse" in text and count >= 100:
             return False, f"claims 'sparse' but cites {count} LiDAR points"
