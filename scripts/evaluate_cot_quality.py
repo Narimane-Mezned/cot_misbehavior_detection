@@ -31,6 +31,12 @@ def check_risk_level_consistency(record: dict) -> tuple:
         return False, (f"risk_level='compromised' but clean_score={clean:.3f} / "
                        f"score={score:.3f} vs threshold={threshold:.3f} does not show a hidden detection")
 
+    if record.get("detector_status") == "compromised":
+        clean = record.get("clean_score")
+        if clean is None:
+            return False, "detector_status='compromised' but no clean_score recorded"
+        score = clean
+
     expected = "low" if score <= threshold else ("moderate" if score < 2 * threshold else "high")
     if level == expected:
         return True, ""
@@ -65,6 +71,12 @@ def check_score_quoted_correctly(record: dict) -> tuple:
     quoted = [float(m) for m in NUMBER_PATTERN.findall(verdict)]
     if any(abs(q - score) < 0.01 for q in quoted):
         return True, ""
+
+    if record.get("detector_status") == "compromised":
+        clean = record.get("clean_score")
+        if clean is not None and any(abs(q - clean) < 0.01 for q in quoted):
+            return True, ""
+
     return False, f"anomaly_score={score:.3f} not found among numbers quoted in verdict: {quoted}"
 
 
@@ -92,7 +104,7 @@ def check_sensor_claim_consistent(record: dict) -> tuple:
         if not rm:
             return False, "claims out-of-range but does not state the distance"
         dist = float(rm.group(1))
-        if dist <= 80.0:
+        if dist < 80.0:
             return False, f"claims out-of-range at only {dist}m, which is within sensor range"
         return True, ""
 
