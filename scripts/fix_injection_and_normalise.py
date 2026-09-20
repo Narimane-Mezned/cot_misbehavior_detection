@@ -20,8 +20,8 @@ SEED_LEN = 10
 DT = 0.1
 MIN_SPEED_MS = 3.0
 DECEL_MS2 = 5.0
-HORIZONS = [3, 5, 10]
-SPEED_BANDS = [(3.0, 6.0), (6.0, 10.0), (10.0, 15.0), (15.0, 1e9)]
+HORIZONS = [10, 20, 30, 50]
+SPEED_BANDS = [(3.0, 6.0), (6.0, 10.0), (10.0, 1e9)]
 
 ATTACK_TARGET_SPEED = {
     "sensor_spoofing": 0.0,
