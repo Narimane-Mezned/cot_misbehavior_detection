@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.model.pampos import PAMPOS
 from src.model.dreaming import dream_rollout
+from src.model.losses import per_feature_errors, normalize_errors, topk_anomaly_score
 from src.data_pipeline.deepaccident_loader import (
     DeepAccidentBenignDataset, parse_label_file, get_frame_number, EGO_TRACK_ID,
 )
@@ -116,6 +117,23 @@ class Scorer:
         self.model.load_state_dict(ck["model_state_dict"])
         self.model.eval()
 
+    @torch.no_grad()
+    def calibrate_single_step(self, windows):
+        self.feature_mae = None
+        errs = []
+        for w in windows:
+            x = ((torch.from_numpy(w).float() - self.mean) / self.std).unsqueeze(0).to(self.device)
+            errs.append(per_feature_errors(self.model(x[:, :-1, :]), x[:, 1:, :]))
+        self.feature_mae = torch.cat(errs, dim=0).mean(dim=(0, 1))
+
+    @torch.no_grad()
+    def single_step(self, window):
+        x = ((torch.from_numpy(window).float() - self.mean) / self.std).unsqueeze(0).to(self.device)
+        e = per_feature_errors(self.model(x[:, :-1, :]), x[:, 1:, :])
+        if getattr(self, "feature_mae", None) is not None:
+            e = normalize_errors(e, self.feature_mae)
+        return float(topk_anomaly_score(e, k=3).mean().item())
+
     def measures(self, seed, actual):
         s = ((torch.from_numpy(seed).float() - self.mean) / self.std).unsqueeze(0).to(self.device)
         a_n = ((torch.from_numpy(actual).float() - self.mean) / self.std).unsqueeze(0).to(self.device)
@@ -149,6 +167,11 @@ class Scorer:
         }
 
 
+def heuristic_speed_change(seq):
+    sp = np.linalg.norm(seq[:, 2:4], axis=1)
+    return float(np.abs(np.diff(sp)).max()) if len(sp) > 1 else 0.0
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -167,11 +190,20 @@ def main():
                                    seq_len=SEED_LEN + HORIZON)
     gen = torch.Generator().manual_seed(cfg["training"]["seed"])
     vs = max(1, int(len(ds) * cfg["training"]["val_fraction"]))
-    _, val_split = random_split(ds, [len(ds) - vs, vs], generator=gen)
+    train_split, val_split = random_split(ds, [len(ds) - vs, vs], generator=gen)
 
     print(f"[setup] building benign reference from {len(val_split)} held-out sequences")
-    ref = [sc.measures(ds.sequences[i][:SEED_LEN], ds.sequences[i][SEED_LEN:SEED_LEN + HORIZON])
-           for i in val_split.indices]
+    sc.calibrate_single_step([ds.sequences[i][:SEED_LEN + HORIZON]
+                              for i in list(train_split.indices)[:300]])
+
+    ref = []
+    for i in val_split.indices:
+        seq = ds.sequences[i]
+        m = sc.measures(seq[:SEED_LEN], seq[SEED_LEN:SEED_LEN + HORIZON])
+        m["single_step"] = sc.single_step(seq[:SEED_LEN + HORIZON])
+        m["heuristic"] = heuristic_speed_change(seq[:SEED_LEN + HORIZON])
+        m["random"] = float(np.random.default_rng(int(i)).random())
+        ref.append(m)
     ineffective = []
 
     traj_dir = REPO_ROOT / args.traj_dir
@@ -199,6 +231,11 @@ def main():
                 if took:
                     m = dict(m)
                     m["speed_before"] = float(np.linalg.norm(A[start - 1, 2:4]))
+                    full = A[start - SEED_LEN:start + HORIZON]
+                    m["single_step"] = sc.single_step(full)
+                    m["heuristic"] = heuristic_speed_change(full)
+                    m["random"] = float(np.random.default_rng(
+                        abs(hash((scenario, attack, tid))) % (2**32)).random())
                     attacked.append(m)
                 else:
                     ineffective.append({"scenario": scenario, "attack": attack, "agent": tid,
@@ -219,15 +256,27 @@ def main():
             print(f"[setup]    {k}: {len(v)}")
     print()
 
-    measures = ["total", "longitudinal", "lateral", "speed_shortfall"]
+    measures = ["random", "heuristic", "single_step",
+                "longitudinal", "lateral", "total", "speed_shortfall"]
+    labels_for = {"random": "Random",
+                  "heuristic": "Speed-change heuristic",
+                  "single_step": "Single-step, 8-feature (as published)",
+                  "longitudinal": "Rollout, longitudinal divergence",
+                  "lateral": "Rollout, lateral divergence",
+                  "total": "Rollout, total divergence",
+                  "speed_shortfall": "Rollout, speed shortfall"}
     labels = [0] * len(ref) + [1] * len(attacked)
     results = {}
 
-    print("=" * 84)
-    print("EACH MEASURE AGAINST THE HELD-OUT BENIGN REFERENCE")
-    print("=" * 84)
-    print(f"{'measure':<20}{'benign p99':<14}{'attacked med':<16}{'caught at 1% FA':<18}{'AUC'}")
-    print("-" * 84)
+    print("=" * 100)
+    print("DETECTION -- every scoring procedure, same model, same data, same calibration")
+    print("=" * 100)
+    print(f"{len(ref)} held-out benign sequences, {len(attacked)} attacked sequences.")
+    print(f"Every threshold is the 99th percentile of that measure on the benign set,")
+    print(f"so all rows operate at a 1% false-alarm rate.")
+    print()
+    print(f"{'scoring procedure':<40}{'AUC':<10}{'detected':<14}{'threshold':<13}{'attacked median'}")
+    print("-" * 100)
 
     for m in measures:
         b = np.array([r[m] for r in ref])
@@ -236,8 +285,12 @@ def main():
         caught = int((a > thr).sum())
         results[m] = detection_metrics(labels, b.tolist() + a.tolist(), threshold=thr)
         auc = results[m].get("auc", float("nan"))
-        print(f"{m:<20}{thr:<14.4f}{np.median(a):<16.4f}"
-              f"{f'{caught}/{len(a)}':<18}{auc:.4f}")
+        print(f"{labels_for[m]:<40}{auc:<10.4f}{f'{caught}/{len(a)}':<14}"
+              f"{thr:<13.4f}{np.median(a):.4f}")
+    print("-" * 100)
+    print()
+    print("  The single-step row is the detector exactly as published. Every rollout row")
+    print("  uses the same trained weights; only the question asked of them differs.")
 
     print()
     print("=" * 84)
