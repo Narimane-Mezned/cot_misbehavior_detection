@@ -20,6 +20,10 @@ from src.eval.metrics import detection_metrics, compare_models, format_compariso
 
 ATTACKS = ["sensor_spoofing", "fake_emergency", "fake_safety",
            "traffic_light_tampering", "universal_perturbation", "sybil"]
+
+UNTRACKED_TRACK_ID = "-1"
+MIN_EFFECT_MS = 1.0
+SPEED_BANDS = [(0.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)]
 SEED_LEN = 10
 HORIZON = 3
 
@@ -27,7 +31,30 @@ HORIZON = 3
 def commanded_agents(run):
     rec = run.get("attack_record") or {}
     bh = (rec.get("metadata") or {}).get("enforced_behaviour") or {}
-    return [str(t) for t in bh.get("track_ids", [])]
+    return [str(t) for t in bh.get("track_ids", []) if str(t) != UNTRACKED_TRACK_ID]
+
+
+def mean_speed(run, track_id, from_frame, horizon):
+    dt = run["fixed_delta_seconds"]
+    v, taken = [], 0
+    prev = None
+    for fr in run["trajectory"]:
+        cur = fr["agents"].get(track_id)
+        if prev is not None and cur is not None and fr["frame_idx"] >= from_frame:
+            v.append(math.dist((cur["x"], cur["y"]), (prev["x"], prev["y"])) / dt)
+            taken += 1
+            if taken >= horizon:
+                break
+        prev = cur
+    return float(np.mean(v)) if v else float("nan")
+
+
+def attack_took_effect(run_attacked, run_clean, track_id, start, horizon):
+    a = mean_speed(run_attacked, track_id, start, horizon)
+    c = mean_speed(run_clean, track_id, start, horizon)
+    if math.isnan(a) or math.isnan(c):
+        return False, a, c
+    return (c - a) >= MIN_EFFECT_MS, a, c
 
 
 def find_label_dir(data_root, scenario):
@@ -145,6 +172,7 @@ def main():
     print(f"[setup] building benign reference from {len(val_split)} held-out sequences")
     ref = [sc.measures(ds.sequences[i][:SEED_LEN], ds.sequences[i][SEED_LEN:SEED_LEN + HORIZON])
            for i in val_split.indices]
+    ineffective = []
 
     traj_dir = REPO_ROOT / args.traj_dir
     scenarios = sorted({f.name.split("__")[0] for f in traj_dir.glob("*__attacked.json")})
@@ -166,9 +194,30 @@ def main():
                 A = series(run_a, tid, sensors)
                 if A is None or start < SEED_LEN or start + HORIZON > len(A):
                     continue
-                attacked.append(sc.measures(A[start - SEED_LEN:start], A[start:start + HORIZON]))
+                took, sp_a, sp_c = attack_took_effect(run_a, run_clean, tid, start, HORIZON)
+                m = sc.measures(A[start - SEED_LEN:start], A[start:start + HORIZON])
+                if took:
+                    m = dict(m)
+                    m["speed_before"] = float(np.linalg.norm(A[start - 1, 2:4]))
+                    attacked.append(m)
+                else:
+                    ineffective.append({"scenario": scenario, "attack": attack, "agent": tid,
+                                        "attacked_speed": sp_a, "clean_speed": sp_c})
 
-    print(f"[setup] {len(attacked)} attacked sequences\n")
+    print(f"[setup] {len(attacked)} attacked sequences where the attack changed behaviour")
+    print(f"[setup] {len(ineffective)} commanded agents where it did not, excluded below")
+    if ineffective:
+        print(f"[setup] exclusion criterion fixed in advance: the attacked agent must be at")
+        print(f"[setup] least {MIN_EFFECT_MS} m/s slower than the same agent in the clean replay,")
+        print(f"[setup] over the same frames. An attack that does not alter behaviour cannot")
+        print(f"[setup] be detected by any behavioural detector.")
+        by_reason = {}
+        for r in ineffective:
+            key = "already stationary" if r["clean_speed"] < 1.0 else "attack had no effect"
+            by_reason.setdefault(key, []).append(r)
+        for k, v in by_reason.items():
+            print(f"[setup]    {k}: {len(v)}")
+    print()
 
     measures = ["total", "longitudinal", "lateral", "speed_shortfall"]
     labels = [0] * len(ref) + [1] * len(attacked)
@@ -207,6 +256,29 @@ def main():
     else:
         print("  No refinement improves meaningfully on total divergence.")
 
+    if attacked and "speed_before" in attacked[0]:
+        b = np.array([r["speed_shortfall"] for r in ref])
+        thr = float(np.percentile(b, 99))
+        print()
+        print("=" * 84)
+        print("DETECTION BY THE AGENT'S SPEED BEFORE THE ATTACK")
+        print("=" * 84)
+        print(f"{'speed band':<18}{'n':<8}{'detected':<14}{'rate'}")
+        print("-" * 84)
+        bands = []
+        for lo, hi in SPEED_BANDS:
+            sel = [r for r in attacked if lo <= r["speed_before"] < hi]
+            if not sel:
+                continue
+            hit = sum(1 for r in sel if r["speed_shortfall"] > thr)
+            name = f"{lo:.0f}-{hi:.0f} m/s" if hi < 1e9 else f"{lo:.0f}+ m/s"
+            bands.append({"band": name, "n": len(sel), "detected": hit})
+            print(f"{name:<18}{len(sel):<8}{hit}/{len(sel):<9}{hit/len(sel)*100:.1f}%")
+        print("-" * 84)
+        print(f"  Threshold is {thr:.3f}. A vehicle travelling at v m/s cannot produce a")
+        print(f"  shortfall larger than v, so below that speed the signal is bounded under")
+        print(f"  the threshold by physics rather than by any property of the detector.")
+
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
     clean = {}
@@ -215,6 +287,8 @@ def main():
         clean[k] = v
     with open(out / "divergence_measures.json", "w") as f:
         json.dump({"n_reference": len(ref), "n_attacked": len(attacked),
+                   "n_ineffective": len(ineffective), "ineffective": ineffective,
+                   "min_effect_ms": MIN_EFFECT_MS,
                    "results": clean}, f, indent=2, default=str)
     print(f"\n[done] saved to outputs/results/divergence_measures.json")
 

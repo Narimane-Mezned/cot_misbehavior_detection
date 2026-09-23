@@ -13,16 +13,33 @@ def get_lane_id(replay_state, agent) -> int:
     return waypoint.lane_id if waypoint is not None else None
 
 
-def select_unique_lane_targets(replay_state, count: int, exclude_track_ids: set = None, sort_by_speed_desc: bool = False):
-    exclude_track_ids = exclude_track_ids or set()
+UNTRACKED_TRACK_ID = -1
+EGO_TRACK_ID = -100
+MIN_TARGET_SPEED_MS = 1.0
+
+
+def select_unique_lane_targets(replay_state, count: int, exclude_track_ids: set = None,
+                               sort_by_speed_desc: bool = False,
+                               min_speed_ms: float = MIN_TARGET_SPEED_MS):
+    exclude_track_ids = set(exclude_track_ids or set())
+    exclude_track_ids.update({UNTRACKED_TRACK_ID, EGO_TRACK_ID,
+                              str(UNTRACKED_TRACK_ID), str(EGO_TRACK_ID)})
 
     candidates = []
+    skipped_stationary = 0
     for track_id, agent in replay_state.agents.items():
         if track_id in exclude_track_ids or agent.actor is None:
             continue
-        lane_id = get_lane_id(replay_state, agent)
         speed = get_agent_speed(agent)
+        if speed < min_speed_ms:
+            skipped_stationary += 1
+            continue
+        lane_id = get_lane_id(replay_state, agent)
         candidates.append((track_id, agent, lane_id, speed))
+
+    if skipped_stationary:
+        print(f"[targets] skipped {skipped_stationary} agent(s) below "
+              f"{min_speed_ms} m/s -- an attack cannot slow a stationary vehicle")
 
     if sort_by_speed_desc:
         candidates.sort(key=lambda c: c[3], reverse=True)

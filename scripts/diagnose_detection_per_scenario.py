@@ -23,7 +23,7 @@ HORIZON = 3
 
 def commanded(run):
     bh = ((run.get("attack_record") or {}).get("metadata") or {}).get("enforced_behaviour") or {}
-    return [str(t) for t in bh.get("track_ids", [])]
+    return [str(t) for t in bh.get("track_ids", []) if str(t) != "-1"]
 
 
 def find_label_dir(root, scenario):

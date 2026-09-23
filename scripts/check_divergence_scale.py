@@ -26,7 +26,7 @@ HORIZON = 3
 def commanded_agents(run):
     rec = run.get("attack_record") or {}
     bh = (rec.get("metadata") or {}).get("enforced_behaviour") or {}
-    return [str(t) for t in bh.get("track_ids", [])]
+    return [str(t) for t in bh.get("track_ids", []) if str(t) != "-1"]
 
 
 def find_label_dir(data_root, scenario):

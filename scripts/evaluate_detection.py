@@ -22,7 +22,7 @@ FEATURE_NAMES = ["x", "y", "vx", "vy", "yaw"]
 def commanded_agents(run):
     record = run.get("attack_record") or {}
     behaviour = (record.get("metadata") or {}).get("enforced_behaviour") or {}
-    return [str(t) for t in behaviour.get("track_ids", [])]
+    return [str(t) for t in behaviour.get("track_ids", []) if str(t) != "-1"]
 
 
 NEIGHBOUR_RADIUS = 50.0
