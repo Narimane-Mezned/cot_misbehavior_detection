@@ -293,22 +293,6 @@ def main():
     print("  uses the same trained weights; only the question asked of them differs.")
 
     print()
-    print("=" * 84)
-    print("INTERPRETATION")
-    print("=" * 84)
-    best = max(measures, key=lambda m: results[m].get("auc", 0))
-    base_auc = results["total"].get("auc", 0)
-    best_auc = results[best].get("auc", 0)
-    print(f"  current measure (total divergence) : AUC {base_auc:.4f}")
-    print(f"  best measure ({best}){' ' * max(0, 21 - len(best))}: AUC {best_auc:.4f}")
-    print()
-    if best != "total" and best_auc > base_auc + 0.05:
-        print(f"  Scoring by {best} improves on total divergence. An attacked vehicle")
-        print(f"  falls behind its predicted position in a consistent direction, whereas")
-        print(f"  normal unpredictability is not directional.")
-    else:
-        print("  No refinement improves meaningfully on total divergence.")
-
     if attacked and "speed_before" in attacked[0]:
         b = np.array([r["speed_shortfall"] for r in ref])
         thr = float(np.percentile(b, 99))
