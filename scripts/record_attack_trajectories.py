@@ -136,13 +136,25 @@ def run_replay(client, scenario_type_dir, scenario_name, traffic_manager, mode,
                 spawned_actor_ids = collect_spawned_actor_ids(attack_record)
 
                 affected = set(getattr(attack_record, "affected_track_ids", []) or [])
-                if release_all:
-                    affected = {tid for tid, a in replay_state.agents.items() if a.actor is not None}
-                released = affected
 
                 metadata = getattr(attack_record, "metadata", {}) or {}
                 perturbation = metadata.get("perturbation")
                 behaviour = metadata.get("enforced_behaviour")
+
+                commanded = set()
+                if behaviour:
+                    commanded = {str(t) for t in behaviour.get("track_ids", [])}
+                    commanded |= {int(t) for t in behaviour.get("track_ids", [])
+                                  if str(t).lstrip("-").isdigit()}
+
+                released = {tid for tid in (affected | commanded)
+                            if tid in replay_state.agents}
+
+                unattended = affected - commanded
+                if unattended:
+                    print(f"    [attack] {len(unattended)} affected agent(s) are not "
+                          f"commanded; keeping them in replay so they do not coast")
+                    released = {tid for tid in commanded if tid in replay_state.agents}
 
                 print(f"    [attack] injected at frame {frame_idx}; "
                       f"{len(released)} agent(s) under attack control; "
@@ -280,10 +292,10 @@ def main():
     registry = {
         "sensor_spoofing": (inject_sensor_spoofing, {"traffic_manager": traffic_manager}, False),
         "fake_emergency": (inject_fake_emergency, {"traffic_manager": traffic_manager}, False),
-        "fake_safety": (inject_fake_safety, {}, True),
-        "traffic_light_tampering": (inject_traffic_light_tampering, {}, True),
+        "fake_safety": (inject_fake_safety, {}, False),
+        "traffic_light_tampering": (inject_traffic_light_tampering, {}, False),
         "universal_perturbation": (inject_universal_perturbation, {}, False),
-        "sybil": (inject_sybil, {}, True),
+        "sybil": (inject_sybil, {}, False),
     }
 
     requested = [a.strip() for a in args.attacks.split(",") if a.strip()]
