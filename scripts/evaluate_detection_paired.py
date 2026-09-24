@@ -27,6 +27,7 @@ MIN_EFFECT_MS = 1.0
 SPEED_BANDS = [(0.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)]
 
 MEASURES = ["random", "heuristic", "single_step", "total", "speed_shortfall"]
+MAD_SCALE = 1.4826
 LABELS = {"random": "Random",
           "heuristic": "Speed-change heuristic",
           "single_step": "Single-step, 8-feature (as published)",
@@ -236,26 +237,55 @@ def main():
         print(f"  Clean replay and native data score comparably ({ss:.2f}x), so the")
         print(f"  native reference is not confounded by the replay mechanism.")
 
+    print()
+    print("=" * 96)
+    print("CALIBRATING THE ROBUST ESTIMATOR")
+    print("=" * 96)
+    print("A 99th percentile of a small set is decided by its top one or two values.")
+    print("Section 5.3 establishes this fragility for poisoned calibration data; it")
+    print("applies equally to a benign outlier. We therefore also report a threshold")
+    print("from median + kappa * 1.4826 * MAD, with kappa fixed on the large held-out")
+    print("benign set so that it reproduces the 99th percentile there.")
+    print()
+    kappa = {}
+    for m in MEASURES:
+        v = np.array([r[m] for r in native])
+        med = float(np.median(v))
+        mad = float(np.median(np.abs(v - med))) * MAD_SCALE
+        p99 = float(np.percentile(v, 99))
+        kappa[m] = (p99 - med) / mad if mad > 1e-9 else 0.0
+        print(f"  {LABELS[m]:<40}kappa = {kappa[m]:6.2f}")
+
+    def robust_threshold(values, m):
+        med = float(np.median(values))
+        mad = float(np.median(np.abs(values - med))) * MAD_SCALE
+        return med + kappa[m] * mad
+
     for ref_name, ref in [("PAIRED CLEAN REPLAY", paired_benign),
                           ("NATIVE DEEPACCIDENT", native)]:
         print()
         print("=" * 96)
         print(f"DETECTION -- benign reference: {ref_name} ({len(ref)} sequences)")
         print("=" * 96)
-        print(f"{'scoring procedure':<40}{'AUC':<10}{'detected':<14}{'threshold':<13}{'attacked median'}")
+        print(f"{'scoring procedure':<40}{'AUC':<10}"
+              f"{'percentile thr':<19}{'robust thr':<19}")
         print("-" * 96)
         for m in MEASURES:
             b = np.array([r[m] for r in ref])
             a = np.array([r[m] for r in attacked])
-            thr = float(np.percentile(b, 99))
+            thr_p = float(np.percentile(b, 99))
+            thr_r = robust_threshold(b, m)
             labels = [0] * len(b) + [1] * len(a)
-            res = detection_metrics(labels, b.tolist() + a.tolist(), threshold=thr)
+            res = detection_metrics(labels, b.tolist() + a.tolist(), threshold=thr_r)
+            cp = f"{int((a > thr_p).sum())}/{len(a)}"
+            cr = f"{int((a > thr_r).sum())}/{len(a)}"
             print(f"{LABELS[m]:<40}{res['auc']:<10.4f}"
-                  f"{f'{int((a > thr).sum())}/{len(a)}':<14}{thr:<13.4f}{np.median(a):.4f}")
+                  f"{f'{thr_p:8.3f} -> {cp}':<19}{f'{thr_r:8.3f} -> {cr}':<19}")
         print("-" * 96)
+        print("  AUC is threshold-free and identical under both estimators.")
 
     b = np.array([r["speed_shortfall"] for r in paired_benign])
-    thr = float(np.percentile(b, 99))
+    thr = robust_threshold(b, "speed_shortfall")
     print()
     print("=" * 96)
     print("SPEED SHORTFALL BY THE AGENT'S SPEED BEFORE THE ATTACK (paired reference)")
