@@ -8,6 +8,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.attacks.environment_attacks.attack_record import AttackRecord
 from src.attacks.environment_attacks.attack_common import enforced_behaviour
+from src.attacks.environment_attacks.attack_common import (
+    UNTRACKED_TRACK_ID, EGO_TRACK_ID, MIN_TARGET_SPEED_MS, get_agent_speed,
+)
 
 DEFAULT_DURATION_FRAMES = 30
 DEFAULT_EPSILON = 0.3
@@ -44,7 +47,12 @@ def inject_universal_perturbation(
     scale_velocity: float = DEFAULT_SCALE_VELOCITY,
     seed: int = None,
 ) -> AttackRecord:
-    affected_track_ids = [tid for tid, agent in replay_state.agents.items() if agent.actor is not None]
+    affected_track_ids = [
+        tid for tid, agent in replay_state.agents.items()
+        if agent.actor is not None
+        and int(tid) not in (UNTRACKED_TRACK_ID, EGO_TRACK_ID)
+        and get_agent_speed(agent) >= MIN_TARGET_SPEED_MS
+    ]
 
     if not affected_track_ids:
         return AttackRecord(
