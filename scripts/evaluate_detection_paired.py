@@ -239,27 +239,17 @@ def main():
 
     print()
     print("=" * 96)
-    print("CALIBRATING THE ROBUST ESTIMATOR")
+    print("CHOOSING AN OPERATING POINT THE SAMPLE SUPPORTS")
     print("=" * 96)
-    print("A 99th percentile of a small set is decided by its top one or two values.")
-    print("Section 5.3 establishes this fragility for poisoned calibration data; it")
-    print("applies equally to a benign outlier. We therefore also report a threshold")
-    print("from median + kappa * 1.4826 * MAD, with kappa fixed on the large held-out")
-    print("benign set so that it reproduces the 99th percentile there.")
+    n = len(paired_benign)
+    for q in (99, 95, 90):
+        rank = q / 100 * (n - 1)
+        print(f"  {q}th percentile of {n} sequences sits at rank "
+              f"{rank:.1f}, i.e. the top {n - rank:.0f} observation(s)")
     print()
-    kappa = {}
-    for m in MEASURES:
-        v = np.array([r[m] for r in native])
-        med = float(np.median(v))
-        mad = float(np.median(np.abs(v - med))) * MAD_SCALE
-        p99 = float(np.percentile(v, 99))
-        kappa[m] = (p99 - med) / mad if mad > 1e-9 else 0.0
-        print(f"  {LABELS[m]:<40}kappa = {kappa[m]:6.2f}")
-
-    def robust_threshold(values, m):
-        med = float(np.median(values))
-        mad = float(np.median(np.abs(values - med))) * MAD_SCALE
-        return med + kappa[m] * mad
+    print("  The 99th percentile is decided by one or two sequences and is not")
+    print("  estimable here. We therefore report the operating point at the 95th")
+    print("  percentile, a 5% false-alarm rate, which rank 78 of 83 supports.")
 
     for ref_name, ref in [("PAIRED CLEAN REPLAY", paired_benign),
                           ("NATIVE DEEPACCIDENT", native)]:
@@ -268,24 +258,26 @@ def main():
         print(f"DETECTION -- benign reference: {ref_name} ({len(ref)} sequences)")
         print("=" * 96)
         print(f"{'scoring procedure':<40}{'AUC':<10}"
-              f"{'percentile thr':<19}{'robust thr':<19}")
+              f"{'at 5% FA':<14}{'at 10% FA':<14}{'at 1% FA'}")
         print("-" * 96)
         for m in MEASURES:
             b = np.array([r[m] for r in ref])
             a = np.array([r[m] for r in attacked])
-            thr_p = float(np.percentile(b, 99))
-            thr_r = robust_threshold(b, m)
             labels = [0] * len(b) + [1] * len(a)
-            res = detection_metrics(labels, b.tolist() + a.tolist(), threshold=thr_r)
-            cp = f"{int((a > thr_p).sum())}/{len(a)}"
-            cr = f"{int((a > thr_r).sum())}/{len(a)}"
+            thr95 = float(np.percentile(b, 95))
+            res = detection_metrics(labels, b.tolist() + a.tolist(), threshold=thr95)
+            counts = {}
+            for q in (95, 90, 99):
+                t = float(np.percentile(b, q))
+                counts[q] = f"{int((a > t).sum())}/{len(a)}"
             print(f"{LABELS[m]:<40}{res['auc']:<10.4f}"
-                  f"{f'{thr_p:8.3f} -> {cp}':<19}{f'{thr_r:8.3f} -> {cr}':<19}")
+                  f"{counts[95]:<14}{counts[90]:<14}{counts[99]}")
         print("-" * 96)
-        print("  AUC is threshold-free and identical under both estimators.")
+        print("  AUC is threshold-free. The 1% column is shown for completeness but")
+        print("  rests on the top one or two benign sequences of the reference set.")
 
     b = np.array([r["speed_shortfall"] for r in paired_benign])
-    thr = robust_threshold(b, "speed_shortfall")
+    thr = float(np.percentile(b, 95))
     print()
     print("=" * 96)
     print("SPEED SHORTFALL BY THE AGENT'S SPEED BEFORE THE ATTACK (paired reference)")
