@@ -325,6 +325,8 @@ def main():
     print(f"[setup] Plus one pure 'clean' replay per scenario.")
     print(f"[setup] Output: {output_dir}\n")
 
+    failures = []
+
     for scenario_name in scenario_names:
         print(f"[scenario] {scenario_name}")
 
@@ -339,6 +341,7 @@ def main():
             print(f"  [clean] {len(result['trajectory'])} frames -> {out.name}")
           except Exception as e:
             print(f"  [clean] FAILED: {type(e).__name__}: {e}")
+            failures.append((scenario_name, f"{type(e).__name__}: {e}"))
             continue
 
         for attack_name in requested:
@@ -386,6 +389,13 @@ def main():
 
     print(f"[done] Saved to {output_dir}")
     print("[done] Please send the whole data/attack_trajectories/ folder back.")
+
+    if failures:
+        print()
+        print(f"[failed] {len(failures)} scenario(s) produced no usable data:")
+        for name, why in failures:
+            print(f"[failed]   {name}: {why}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
