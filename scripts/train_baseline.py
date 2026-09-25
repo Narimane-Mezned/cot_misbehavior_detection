@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -56,9 +57,23 @@ def run_epoch(model: nn.Module, loader: DataLoader, optimizer, delta: float, dev
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=None,
+                        help="override the training seed; writes to a "
+                             "seed-suffixed checkpoint so the canonical one "
+                             "is never overwritten")
+    args = parser.parse_args()
+
     config_path = REPO_ROOT / "configs" / "pampos_baseline.yaml"
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+
+    suffix = ""
+    if args.seed is not None:
+        config["training"]["seed"] = args.seed
+        suffix = f"_seed{args.seed}"
+        print(f"[setup] Seed overridden to {args.seed}")
+        print(f"[setup] Writing to pampos_baseline{suffix}_best.pt")
 
     set_seed(config["training"]["seed"])
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -95,7 +110,7 @@ def main():
 
     processed_dir = REPO_ROOT / "data" / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
-    stats_path = processed_dir / "feature_stats.npz"
+    stats_path = processed_dir / f"feature_stats{suffix}.npz"
 
     print("[setup] Computing feature normalization stats from the current training split...")
     mean, std = compute_dataset_stats(train_dataset_raw)
@@ -123,7 +138,7 @@ def main():
 
     checkpoint_dir = REPO_ROOT / config["paths"]["checkpoint_dir"]
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / "pampos_baseline_best.pt"
+    checkpoint_path = checkpoint_dir / f"pampos_baseline{suffix}_best.pt"
 
     best_val_loss = float("inf")
     epochs_without_improvement = 0
