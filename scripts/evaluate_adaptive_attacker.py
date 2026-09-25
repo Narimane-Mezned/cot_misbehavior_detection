@@ -151,7 +151,16 @@ def main():
 
     target = PAMPOSTarget(
         checkpoint_path=REPO_ROOT / cfg["paths"]["checkpoint_dir"] / "pampos_baseline_best.pt",
-        config=cfg, device=device)
+        feature_stats_path=REPO_ROOT / "data" / "processed" / "feature_stats.npz",
+        model_config={
+            "input_dim": cfg["model"]["input_dim"],
+            "d_model": cfg["model"]["d_model"],
+            "nhead": cfg["model"]["nhead"],
+            "num_layers": cfg["model"]["num_layers"],
+            "dim_feedforward": cfg["model"]["dim_feedforward"],
+            "dropout": cfg["model"]["dropout"],
+        },
+        device=device)
 
     trials = []
     for seed in SEEDS:
