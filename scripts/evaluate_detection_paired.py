@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import json
 import math
@@ -161,8 +162,17 @@ def main():
     with open(REPO_ROOT / "configs" / "pampos_baseline.yaml") as f:
         cfg = yaml.safe_load(f)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    st = np.load(REPO_ROOT / "data" / "processed" / "feature_stats.npz")
-    sc = Scorer(REPO_ROOT / cfg["paths"]["checkpoint_dir"] / "pampos_baseline_best.pt",
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=None,
+                        help="evaluate a seed-suffixed checkpoint instead of the canonical one")
+    args = parser.parse_args()
+    suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    if suffix:
+        print(f"[setup] evaluating pampos_baseline{suffix}_best.pt")
+
+    st = np.load(REPO_ROOT / "data" / "processed" / f"feature_stats{suffix}.npz")
+    sc = Scorer(REPO_ROOT / cfg["paths"]["checkpoint_dir"] / f"pampos_baseline{suffix}_best.pt",
                 cfg, st["mean"], st["std"], dev)
 
     ds = DeepAccidentBenignDataset(data_root=REPO_ROOT / cfg["data"]["raw_dir"],
@@ -302,7 +312,7 @@ def main():
 
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "detection_paired_comparison.json", "w") as f:
+    with open(out / f"detection_paired_comparison{suffix}.json", "w") as f:
         json.dump({"n_attacked": len(attacked), "n_paired": len(paired_benign),
                    "n_native": len(native), "n_excluded": excluded,
                    "domain_shift": shift, "speed_bands": bands}, f, indent=2, default=str)
