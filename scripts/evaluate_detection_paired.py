@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import sys
@@ -33,6 +34,10 @@ LABELS = {"random": "Random",
           "single_step": "Single-step, 8-feature (as published)",
           "total": "Rollout, total divergence",
           "speed_shortfall": "Rollout, speed shortfall"}
+
+
+def stable_seed(key):
+    return int(hashlib.md5(str(key).encode()).hexdigest()[:8], 16)
 
 
 def commanded(run):
@@ -149,7 +154,7 @@ class Scorer:
         total, sf = self.rollout(seed, actual)
         return {"single_step": self.single_step(full), "total": total,
                 "speed_shortfall": sf, "heuristic": heuristic(full),
-                "random": float(np.random.default_rng(abs(hash(key)) % (2**32)).random())}
+                "random": float(np.random.default_rng(stable_seed(key)).random())}
 
 
 def main():

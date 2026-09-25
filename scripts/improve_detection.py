@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import sys
@@ -27,6 +28,10 @@ MIN_EFFECT_MS = 1.0
 SPEED_BANDS = [(0.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)]
 SEED_LEN = 10
 HORIZON = 3
+
+
+def stable_seed(key):
+    return int(hashlib.md5(str(key).encode()).hexdigest()[:8], 16)
 
 
 def commanded_agents(run):
@@ -202,7 +207,7 @@ def main():
         m = sc.measures(seq[:SEED_LEN], seq[SEED_LEN:SEED_LEN + HORIZON])
         m["single_step"] = sc.single_step(seq[:SEED_LEN + HORIZON])
         m["heuristic"] = heuristic_speed_change(seq[:SEED_LEN + HORIZON])
-        m["random"] = float(np.random.default_rng(int(i)).random())
+        m["random"] = float(np.random.default_rng(stable_seed(("native", int(i)))).random())
         ref.append(m)
     ineffective = []
 
@@ -235,7 +240,7 @@ def main():
                     m["single_step"] = sc.single_step(full)
                     m["heuristic"] = heuristic_speed_change(full)
                     m["random"] = float(np.random.default_rng(
-                        abs(hash((scenario, attack, tid))) % (2**32)).random())
+                        stable_seed((scenario, attack, tid))).random())
                     attacked.append(m)
                 else:
                     ineffective.append({"scenario": scenario, "attack": attack, "agent": tid,
