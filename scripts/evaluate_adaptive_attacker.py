@@ -18,14 +18,19 @@ N_PROBES = 20
 SEEDS = [0, 1, 2]
 
 ALPHAS = [0.5, 0.7, 0.9, 1.1, 1.5, 3.0]
-FRACTIONS = [0.15, 0.30, 0.50]
+FRACTIONS = [0.15]
+ALPHA_FULL = None
 
 
-def filter_windows(windows, z_threshold=Z_THRESHOLD):
+def filter_windows(windows, injected_mask=None, z_threshold=Z_THRESHOLD):
+    """Returns the cleaned windows, the overall removal rate, and -- when a
+    mask of injected locations is supplied -- the share of INJECTED points
+    the filter removed. The two are very different: the filter also removes
+    naturally extreme timesteps from clean data."""
     W = np.stack(windows)
     n, T, F = W.shape
     cleaned = W.copy()
-    removed = 0
+    removed_any = np.zeros((n, T), dtype=bool)
     for t in range(T):
         others = np.delete(W, t, axis=1)
         med = np.median(others, axis=1)
@@ -33,8 +38,13 @@ def filter_windows(windows, z_threshold=Z_THRESHOLD):
         z = np.abs(W[:, t, :] - med) / (1.4826 * mad)
         hit = z.max(axis=1) > z_threshold
         cleaned[hit, t, :] = med[hit]
-        removed += int(hit.sum())
-    return [cleaned[i] for i in range(n)], removed / (n * T)
+        removed_any[hit, t] = True
+
+    overall = float(removed_any.mean())
+    injected_removed = float("nan")
+    if injected_mask is not None and injected_mask.any():
+        injected_removed = float(removed_any[injected_mask].mean())
+    return [cleaned[i] for i in range(n)], overall, injected_removed
 
 
 def z_of_point(window, t, candidate):
@@ -44,29 +54,34 @@ def z_of_point(window, t, candidate):
     return float(np.max(np.abs(candidate - med) / (1.4826 * mad)))
 
 
-def poison_adaptive(windows, trigger, alpha, fraction, rng):
-    """Move poisoned points toward the trigger, but only as far as a z-score of
-    alpha * Z_THRESHOLD. alpha < 1 survives the filter; alpha > 1 is removed."""
+def poison(windows, trigger, alpha, fraction, rng):
+    """alpha is the injection strength as a multiple of the filter threshold.
+    alpha=None reproduces the non-adaptive attack: the point is replaced by
+    the trigger outright, with no regard for the filter."""
     out = [w.copy() for w in windows]
-    n_points = len(windows) * windows[0].shape[0]
+    T = windows[0].shape[0]
+    n_points = len(windows) * T
     k = int(n_points * fraction)
     locs = rng.choice(n_points, size=k, replace=False)
+    mask = np.zeros((len(windows), T), dtype=bool)
 
     for loc in locs:
-        wi, t = divmod(loc, windows[0].shape[0])
+        wi, t = divmod(loc, T)
         w = out[wi]
+        mask[wi, t] = True
+        if alpha is None:
+            w[t] = trigger
+            continue
         others = np.delete(w, t, axis=0)
         med = np.median(others, axis=0)
         mad = np.median(np.abs(others - med), axis=0) + 1e-8
-
         direction = trigger - med
-        norm_z = np.abs(direction) / (1.4826 * mad)
-        peak = float(norm_z.max())
+        peak = float((np.abs(direction) / (1.4826 * mad)).max())
         if peak < 1e-9:
             continue
         scale = min(1.0, (alpha * Z_THRESHOLD) / peak)
         w[t] = med + direction * scale
-    return out
+    return out, mask
 
 
 def build_trigger_from_distribution(benign_pool, rng):
@@ -97,27 +112,35 @@ def run_seed(target, train_windows, all_windows, seed):
 
     out = {"seed": seed, "clean_threshold": clean_threshold, "cells": {}}
 
-    for alpha in ALPHAS:
+    _, baseline_removal, _ = filter_windows(calib)
+    out["baseline_removal"] = 100.0 * baseline_removal
+
+    for alpha in ALPHAS + [ALPHA_FULL]:
         for frac in FRACTIONS:
             trigger = build_trigger_from_distribution(calib, rng)
-            poisoned = poison_adaptive(calib, trigger, alpha, frac, rng)
-            cleaned, removal = filter_windows(poisoned)
+            poisoned, mask = poison(calib, trigger, alpha, frac, rng)
 
-            target.feature_mae = None
-            target.calibrate(cleaned)
-            poisoned_threshold = target.threshold
+            for defended in (False, True):
+                if defended:
+                    used, _, inj_removed = filter_windows(poisoned, injected_mask=mask)
+                else:
+                    used, inj_removed = poisoned, 0.0
 
-            hidden = sum(1 for _, s in probes if s <= poisoned_threshold)
-            fa = float(np.mean([s > poisoned_threshold for s in benign_scores]))
+                target.feature_mae = None
+                target.calibrate(used)
+                thr = target.threshold
+                hidden = sum(1 for _, s in probes if s <= thr)
+                fa = float(np.mean([s > thr for s in benign_scores]))
 
-            out["cells"][f"{alpha}_{frac}"] = {
-                "alpha": alpha, "fraction": frac,
-                "attack_success": 100.0 * hidden / len(probes),
-                "filter_removal": 100.0 * removal,
-                "false_alarm": 100.0 * fa,
-                "threshold": poisoned_threshold,
-            }
-        print(f"[seed {seed}] alpha {alpha} done", flush=True)
+                key = f"{'full' if alpha is None else alpha}_{frac}_{'def' if defended else 'undef'}"
+                out["cells"][key] = {
+                    "alpha": alpha, "fraction": frac, "defended": defended,
+                    "attack_success": 100.0 * hidden / len(probes),
+                    "injected_removed": 100.0 * inj_removed,
+                    "false_alarm": 100.0 * fa,
+                    "threshold": thr,
+                }
+        print(f"[seed {seed}] alpha {'full' if alpha is None else alpha} done", flush=True)
 
     target.feature_mae = None
     target.calibrate(calib)
@@ -170,85 +193,74 @@ def main():
         print("[abort] no usable trials")
         return
 
+    base_rm = np.mean([t["baseline_removal"] for t in trials])
     print()
     print("=" * 94)
-    print("ADAPTIVE ADVERSARY -- attack success (%), mean over seeds")
+    print("ADAPTIVE ADVERSARY -- all cells at the same 15% poisoning budget")
     print("=" * 94)
-    print("Rows: injection strength as a multiple of the filter's z-threshold.")
-    print("An alpha below 1 is, by construction, invisible to the filter.\n")
-    print(f"{'alpha':<10}", end="")
-    for frac in FRACTIONS:
-        print(f"{f'{int(frac*100)}% poisoned':<20}", end="")
+    print("alpha is the injection strength as a multiple of the filter's")
+    print(f"z-threshold ({Z_THRESHOLD}). Below 1 the injected point cannot be removed.")
+    print("'full' is the non-adaptive attack: the point is replaced by the trigger")
+    print("outright, ignoring the filter.")
     print()
+    print(f"For reference, the filter replaces {base_rm:.1f}% of timesteps in CLEAN")
+    print("calibration data, so a removal rate near that figure means the filter")
+    print("is not singling the injection out.")
+    print()
+    print(f"{'injection':<14}{'undefended':<16}{'defended':<16}"
+          f"{'injected removed':<20}{'false alarms'}")
     print("-" * 94)
 
     table = {}
-    for alpha in ALPHAS:
-        print(f"{alpha:<10}", end="")
-        for frac in FRACTIONS:
-            key = f"{alpha}_{frac}"
-            succ = np.mean([t["cells"][key]["attack_success"] for t in trials])
-            rem = np.mean([t["cells"][key]["filter_removal"] for t in trials])
-            fa = np.mean([t["cells"][key]["false_alarm"] for t in trials])
-            table[key] = {"success": succ, "removal": rem, "false_alarm": fa}
-            print(f"{f'{succ:5.1f}  (rm {rem:4.1f}%)':<20}", end="")
-        print()
+    order = [str(a) for a in ALPHAS] + ["full"]
+    for a in order:
+        frac = FRACTIONS[0]
+        ku, kd = f"{a}_{frac}_undef", f"{a}_{frac}_def"
+        if ku not in trials[0]["cells"]:
+            continue
+        undef = np.mean([t["cells"][ku]["attack_success"] for t in trials])
+        dfn = np.mean([t["cells"][kd]["attack_success"] for t in trials])
+        rm = np.mean([t["cells"][kd]["injected_removed"] for t in trials])
+        fa = np.mean([t["cells"][kd]["false_alarm"] for t in trials])
+        table[a] = {"undefended": undef, "defended": dfn,
+                    "injected_removed": rm, "false_alarm": fa}
+        label = a if a != "full" else "full (paper)"
+        print(f"{label:<14}{undef:<16.1f}{dfn:<16.1f}{rm:<20.1f}{fa:.2f}")
     print("-" * 94)
-    print("  rm = share of injected points the filter removed")
-
-    print()
-    print("=" * 94)
-    print("FALSE-ALARM COST OF EACH CELL (%)")
-    print("=" * 94)
-    print(f"{'alpha':<10}", end="")
-    for frac in FRACTIONS:
-        print(f"{f'{int(frac*100)}% poisoned':<20}", end="")
-    print()
-    print("-" * 94)
-    for alpha in ALPHAS:
-        print(f"{alpha:<10}", end="")
-        for frac in FRACTIONS:
-            print(f"{table[f'{alpha}_{frac}']['false_alarm']:<20.2f}", end="")
-        print()
-    print("-" * 94)
-
-    best = max(table.items(), key=lambda kv: kv[1]["success"])
-    evasive = {k: v for k, v in table.items() if v["removal"] < 5.0}
-    best_evasive = max(evasive.items(), key=lambda kv: kv[1]["success"]) if evasive else None
 
     print()
     print("=" * 94)
     print("READING")
     print("=" * 94)
-    print(f"  best cell overall          : alpha {best[1] if False else best[0].split('_')[0]}, "
-          f"{float(best[0].split('_')[1])*100:.0f}% poisoned -> "
-          f"{best[1]['success']:.1f}% success, {best[1]['removal']:.1f}% removed")
-    if best_evasive:
-        a, f_ = best_evasive[0].split("_")
-        print(f"  best cell the filter misses: alpha {a}, {float(f_)*100:.0f}% poisoned -> "
-              f"{best_evasive[1]['success']:.1f}% success at "
-              f"{best_evasive[1]['false_alarm']:.2f}% false alarms")
+    sub = {a: v for a, v in table.items() if a != "full" and float(a) < 1.0}
+    if sub and "full" in table:
+        best_sub = max(sub.items(), key=lambda kv: kv[1]["defended"])
+        full = table["full"]
+        print(f"  non-adaptive attack, defended : {full['defended']:.1f}% "
+              f"({full['injected_removed']:.1f}% of its injection removed)")
+        print(f"  best sub-threshold attack     : alpha {best_sub[0]}, "
+              f"{best_sub[1]['defended']:.1f}% "
+              f"({best_sub[1]['injected_removed']:.1f}% removed)")
         print()
-        if best_evasive[1]["success"] > 50:
-            print("  An attacker who scales below the filter's threshold defeats the")
-            print("  defence. This is a real limitation and must be reported as one,")
-            print("  together with the false-alarm cost it imposes on the attacker.")
-        elif best_evasive[1]["success"] > 20:
-            print("  Sub-threshold injection recovers part of the attack. The defence")
-            print("  degrades against an adaptive adversary rather than failing outright.")
+        if best_sub[1]["defended"] > full["defended"] + 15:
+            print("  Scaling below the filter threshold recovers a substantial part of")
+            print("  the attack. The defence degrades against an adaptive adversary and")
+            print("  this must be reported as a limitation.")
+        elif best_sub[1]["defended"] > full["defended"] + 5:
+            print("  Sub-threshold injection gives the attacker a modest advantage over")
+            print("  the non-adaptive attack. Report the margin.")
         else:
-            print("  Sub-threshold injection does not recover the attack: perturbations")
-            print("  small enough to evade the filter are too small to move the threshold.")
-            print("  The defence is robust to this evasion strategy.")
-    else:
-        print("  No cell evaded the filter.")
+            print("  Sub-threshold injection gives the attacker no advantage: a")
+            print("  perturbation small enough to evade the filter is too small to move")
+            print("  the threshold. The defence is robust to this evasion strategy.")
 
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "adaptive_attacker.json", "w") as f:
         json.dump({"z_threshold": Z_THRESHOLD, "calibration_size": CALIBRATION_SIZE,
                    "n_probes": N_PROBES, "seeds": SEEDS,
-                   "alphas": ALPHAS, "fractions": FRACTIONS,
+                   "alphas": ALPHAS, "fraction": FRACTIONS[0],
+                   "baseline_removal": float(base_rm),
                    "table": table}, f, indent=2, default=str)
     print(f"\n[done] saved to outputs/results/adaptive_attacker.json")
 
