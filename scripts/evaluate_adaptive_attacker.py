@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+from torch.utils.data import random_split
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -152,12 +153,12 @@ def main():
 
     ds = DeepAccidentBenignDataset(data_root=REPO_ROOT / cfg["data"]["raw_dir"],
                                    seq_len=cfg["training"]["seq_len"])
-    W = [np.asarray(w, dtype=np.float32) for w in ds.sequences]
-    g = torch.Generator().manual_seed(cfg["training"]["seed"])
-    vs = max(1, int(len(W) * cfg["training"]["val_fraction"]))
-    perm = torch.randperm(len(W), generator=g).tolist()
-    train_windows = [W[i] for i in perm[:len(W) - vs]]
-    eval_windows = [W[i] for i in perm[len(W) - vs:][:2000]]
+    gen = torch.Generator().manual_seed(cfg["training"]["seed"])
+    vs = max(1, int(len(ds) * cfg["training"]["val_fraction"]))
+    tr, _ = random_split(ds, [len(ds) - vs, vs], generator=gen)
+    train_windows = [ds.sequences[i] for i in tr.indices]
+    eval_windows = [ds.sequences[i] for i in range(len(ds))]
+    print(f"[setup] {len(train_windows)} train / {len(eval_windows)} total")
 
     target = PAMPOSTarget(
         checkpoint_path=REPO_ROOT / cfg["paths"]["checkpoint_dir"] / "pampos_baseline_best.pt",
