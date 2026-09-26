@@ -22,20 +22,19 @@ FRACTIONS = [0.15, 0.30, 0.50]
 
 
 def filter_windows(windows, z_threshold=Z_THRESHOLD):
-    cleaned, removed, total = [], 0, 0
-    for w in windows:
-        wc = w.copy()
-        for t in range(w.shape[0]):
-            others = np.delete(w, t, axis=0)
-            med = np.median(others, axis=0)
-            mad = np.median(np.abs(others - med), axis=0) + 1e-8
-            z = np.abs(w[t] - med) / (1.4826 * mad)
-            total += 1
-            if z.max() > z_threshold:
-                wc[t] = med
-                removed += 1
-        cleaned.append(wc)
-    return cleaned, (removed / total if total else 0.0)
+    W = np.stack(windows)
+    n, T, F = W.shape
+    cleaned = W.copy()
+    removed = 0
+    for t in range(T):
+        others = np.delete(W, t, axis=1)
+        med = np.median(others, axis=1)
+        mad = np.median(np.abs(others - med[:, None, :]), axis=1) + 1e-8
+        z = np.abs(W[:, t, :] - med) / (1.4826 * mad)
+        hit = z.max(axis=1) > z_threshold
+        cleaned[hit, t, :] = med[hit]
+        removed += int(hit.sum())
+    return [cleaned[i] for i in range(n)], removed / (n * T)
 
 
 def z_of_point(window, t, candidate):
@@ -93,34 +92,32 @@ def run_seed(target, train_windows, all_windows, seed):
                      key=lambda p: p[1], reverse=True)
     if not flagged:
         return None
-    probes = [w for w, _ in flagged[:N_PROBES]]
-
+    probes = [(w, s) for w, s in flagged[:N_PROBES]]
     benign_scores = [target.raw_score(w) for w in calib]
 
     out = {"seed": seed, "clean_threshold": clean_threshold, "cells": {}}
 
     for alpha in ALPHAS:
         for frac in FRACTIONS:
-            hidden, fa_rates, removal_rates = 0, [], []
-            for probe in probes:
-                trigger = build_trigger_from_distribution(calib, rng)
-                poisoned = poison_adaptive(calib, trigger, alpha, frac, rng)
-                cleaned, removal = filter_windows(poisoned)
-                removal_rates.append(removal)
+            trigger = build_trigger_from_distribution(calib, rng)
+            poisoned = poison_adaptive(calib, trigger, alpha, frac, rng)
+            cleaned, removal = filter_windows(poisoned)
 
-                target.feature_mae = None
-                target.calibrate(cleaned)
-                if target.raw_score(probe) <= target.threshold:
-                    hidden += 1
-                fa = np.mean([s > target.threshold for s in benign_scores])
-                fa_rates.append(float(fa))
+            target.feature_mae = None
+            target.calibrate(cleaned)
+            poisoned_threshold = target.threshold
+
+            hidden = sum(1 for _, s in probes if s <= poisoned_threshold)
+            fa = float(np.mean([s > poisoned_threshold for s in benign_scores]))
 
             out["cells"][f"{alpha}_{frac}"] = {
                 "alpha": alpha, "fraction": frac,
                 "attack_success": 100.0 * hidden / len(probes),
-                "filter_removal": 100.0 * float(np.mean(removal_rates)),
-                "false_alarm": 100.0 * float(np.mean(fa_rates)),
+                "filter_removal": 100.0 * removal,
+                "false_alarm": 100.0 * fa,
+                "threshold": poisoned_threshold,
             }
+        print(f"[seed {seed}] alpha {alpha} done", flush=True)
 
     target.feature_mae = None
     target.calibrate(calib)
