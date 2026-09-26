@@ -25,6 +25,7 @@ ATTACKS = ["sensor_spoofing", "fake_emergency", "fake_safety",
            "traffic_light_tampering", "universal_perturbation", "sybil"]
 SEED_LEN = 10
 HORIZON = 3
+TOPK = 3
 MIN_EFFECT_MS = 1.0
 SPEED_BANDS = [(0.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)]
 
@@ -138,7 +139,7 @@ class Scorer:
         e = per_feature_errors(self.net(x[:, :-1, :]), x[:, 1:, :])
         if self.feature_mae is not None:
             e = normalize_errors(e, self.feature_mae)
-        return float(topk_anomaly_score(e, k=3).mean().item())
+        return float(topk_anomaly_score(e, k=TOPK).mean().item())
 
     @torch.no_grad()
     def rollout(self, seed, actual):
@@ -166,8 +167,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=None,
                         help="evaluate a seed-suffixed checkpoint instead of the canonical one")
+    parser.add_argument("--horizon", type=int, default=None,
+                        help="override the rollout horizon h")
+    parser.add_argument("--topk", type=int, default=None,
+                        help="override the top-K used by single-step scoring")
     args = parser.parse_args()
+    global HORIZON, TOPK
+    if args.horizon is not None:
+        HORIZON = args.horizon
+    if args.topk is not None:
+        TOPK = args.topk
     suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    if args.horizon is not None or args.topk is not None:
+        suffix += f"_h{HORIZON}k{TOPK}"
+        print(f"[setup] horizon {HORIZON}, top-K {TOPK}")
     if suffix:
         print(f"[setup] evaluating pampos_baseline{suffix}_best.pt")
 
