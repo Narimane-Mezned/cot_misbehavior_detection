@@ -36,18 +36,17 @@ def main():
             r = run(h, k)
             if r is None:
                 continue
-            res = r.get("results", r)
-            grid[(h, k)] = res
+            grid[(h, k)] = r
 
     if not grid:
         print("[abort] nothing completed")
         return
 
-    def auc_of(res, label):
-        for key, v in res.items():
-            if label.lower() in key.lower() and isinstance(v, dict) and "auc" in v:
-                return float(v["auc"])
-        return float("nan")
+    def auc_of(record, key):
+        tables = record.get("results", {})
+        paired = tables.get("PAIRED CLEAN REPLAY", {})
+        entry = paired.get(key)
+        return float(entry["auc"]) if entry and "auc" in entry else float("nan")
 
     print()
     print("=" * 80)
@@ -62,7 +61,7 @@ def main():
         print(f"{h:<12}", end="")
         for k in TOPKS:
             v = grid.get((h, k))
-            print(f"{auc_of(v, 'shortfall') if v else float('nan'):<14.4f}", end="")
+            print(f"{auc_of(v, 'speed_shortfall') if v else float('nan'):<14.4f}", end="")
         print()
     print("-" * 80)
 
@@ -79,12 +78,12 @@ def main():
         print(f"{h:<12}", end="")
         for k in TOPKS:
             v = grid.get((h, k))
-            print(f"{auc_of(v, 'single-step') if v else float('nan'):<14.4f}", end="")
+            print(f"{auc_of(v, 'single_step') if v else float('nan'):<14.4f}", end="")
         print()
     print("-" * 80)
 
-    sf = [auc_of(v, "shortfall") for v in grid.values()]
-    ss = [auc_of(v, "single-step") for v in grid.values()]
+    sf = [auc_of(v, "speed_shortfall") for v in grid.values()]
+    ss = [auc_of(v, "single_step") for v in grid.values()]
     paper = grid.get((3, 3))
 
     print()
@@ -94,8 +93,8 @@ def main():
     print(f"  shortfall AUC over the grid  : {min(sf):.4f} to {max(sf):.4f}")
     print(f"  single-step AUC over the grid: {min(ss):.4f} to {max(ss):.4f}")
     if paper:
-        print(f"  at the paper's h=3, k=3      : shortfall {auc_of(paper, 'shortfall'):.4f}, "
-              f"single-step {auc_of(paper, 'single-step'):.4f}")
+        print(f"  at the paper's h=3, k=3      : shortfall {auc_of(paper, 'speed_shortfall'):.4f}, "
+              f"single-step {auc_of(paper, 'single_step'):.4f}")
     print()
     if min(sf) > max(ss):
         print("  Shortfall exceeds single-step at every configuration tested, so the")
@@ -107,9 +106,9 @@ def main():
     out = REPO_ROOT / "outputs" / "results"
     with open(out / "horizon_topk_sweep.json", "w") as f:
         json.dump({"horizons": HORIZONS, "topks": TOPKS,
-                   "shortfall_auc": {f"h{h}k{k}": auc_of(v, "shortfall")
+                   "shortfall_auc": {f"h{h}k{k}": auc_of(v, "speed_shortfall")
                                      for (h, k), v in grid.items()},
-                   "single_step_auc": {f"h{h}k{k}": auc_of(v, "single-step")
+                   "single_step_auc": {f"h{h}k{k}": auc_of(v, "single_step")
                                        for (h, k), v in grid.items()}},
                   f, indent=2)
     print(f"\n[done] saved to outputs/results/horizon_topk_sweep.json")

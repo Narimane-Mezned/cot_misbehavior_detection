@@ -281,8 +281,10 @@ def main():
     print("  estimable here. We therefore report the operating point at the 95th")
     print("  percentile, a 5% false-alarm rate, which rank 78 of 83 supports.")
 
+    auc_tables = {}
     for ref_name, ref in [("PAIRED CLEAN REPLAY", paired_benign),
                           ("NATIVE DEEPACCIDENT", native)]:
+        auc_tables[ref_name] = {}
         print()
         print("=" * 96)
         print(f"DETECTION -- benign reference: {ref_name} ({len(ref)} sequences)")
@@ -300,6 +302,12 @@ def main():
             for q in (95, 90, 99):
                 t = float(np.percentile(b, q))
                 counts[q] = f"{int((a > t).sum())}/{len(a)}"
+            auc_tables[ref_name][m] = {
+                "auc": float(res["auc"]),
+                "detected_5pct": counts[95],
+                "detected_10pct": counts[90],
+                "detected_1pct": counts[99],
+            }
             print(f"{LABELS[m]:<40}{res['auc']:<10.4f}"
                   f"{counts[95]:<14}{counts[90]:<14}{counts[99]}")
         print("-" * 96)
@@ -330,6 +338,8 @@ def main():
     with open(out / f"detection_paired_comparison{out_suffix}.json", "w") as f:
         json.dump({"n_attacked": len(attacked), "n_paired": len(paired_benign),
                    "n_native": len(native), "n_excluded": excluded,
+                   "horizon": HORIZON, "topk": TOPK,
+                   "results": auc_tables,
                    "domain_shift": shift, "speed_bands": bands}, f, indent=2, default=str)
     print(f"\n[done] saved to outputs/results/detection_paired_comparison.json")
 
