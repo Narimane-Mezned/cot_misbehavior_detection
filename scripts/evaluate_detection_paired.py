@@ -335,6 +335,15 @@ def main():
 
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
+
+    if not out_suffix:
+        with open(out / "detection_scores.json", "w") as f:
+            json.dump({
+                "benign": {m: [float(r[m]) for r in paired_benign] for m in MEASURES},
+                "attacked": {m: [float(r[m]) for r in attacked] for m in MEASURES},
+            }, f)
+        print(f"[done] per-sequence scores saved to outputs/results/detection_scores.json")
+
     with open(out / f"detection_paired_comparison{out_suffix}.json", "w") as f:
         json.dump({"n_attacked": len(attacked), "n_paired": len(paired_benign),
                    "n_native": len(native), "n_excluded": excluded,
