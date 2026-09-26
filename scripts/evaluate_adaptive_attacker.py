@@ -12,56 +12,54 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.data_pipeline.deepaccident_loader import DeepAccidentBenignDataset
 from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import PAMPOSTarget
 
-Z_THRESHOLD = 1.5
+Z_LOCAL = 1.5
 CALIBRATION_SIZE = 300
+FRACTION_POISONED = 0.15
 N_PROBES = 20
 SEEDS = [0, 1, 2]
-
-ALPHAS = [0.5, 0.7, 0.9, 1.1, 1.5, 3.0]
-FRACTIONS = [0.15]
-ALPHA_FULL = None
+ALPHAS = [0.5, 0.7, 0.9, 1.1, 1.5]
 
 
-def filter_windows(windows, injected_mask=None, z_threshold=Z_THRESHOLD):
-    """Returns the cleaned windows, the overall removal rate, and -- when a
-    mask of injected locations is supplied -- the share of INJECTED points
-    the filter removed. The two are very different: the filter also removes
-    naturally extreme timesteps from clean data."""
+def clean_local(windows, z=Z_LOCAL, injected_mask=None):
     W = np.stack(windows)
-    n, T, F = W.shape
-    cleaned = W.copy()
-    removed_any = np.zeros((n, T), dtype=bool)
+    n, T, _ = W.shape
+    out = W.copy()
+    removed = np.zeros((n, T), dtype=bool)
     for t in range(T):
         others = np.delete(W, t, axis=1)
         med = np.median(others, axis=1)
         mad = np.median(np.abs(others - med[:, None, :]), axis=1) + 1e-8
-        z = np.abs(W[:, t, :] - med) / (1.4826 * mad)
-        hit = z.max(axis=1) > z_threshold
-        cleaned[hit, t, :] = med[hit]
-        removed_any[hit, t] = True
-
-    overall = float(removed_any.mean())
-    injected_removed = float("nan")
-    if injected_mask is not None and injected_mask.any():
-        injected_removed = float(removed_any[injected_mask].mean())
-    return [cleaned[i] for i in range(n)], overall, injected_removed
+        hit = (np.abs(W[:, t, :] - med) / (1.4826 * mad)).max(axis=1) > z
+        out[hit, t, :] = med[hit]
+        removed[hit, t] = True
+    inj = float(removed[injected_mask].mean()) if (
+        injected_mask is not None and injected_mask.any()) else float("nan")
+    return [out[i] for i in range(n)], float(removed.mean()), inj
 
 
-def z_of_point(window, t, candidate):
-    others = np.delete(window, t, axis=0)
-    med = np.median(others, axis=0)
-    mad = np.median(np.abs(others - med), axis=0) + 1e-8
-    return float(np.max(np.abs(candidate - med) / (1.4826 * mad)))
+def est_percentile(scores, pct=99.0):
+    return float(np.percentile(scores, pct))
+
+
+def est_median_mad(scores, k=3.0):
+    s = np.asarray(scores)
+    med = np.median(s)
+    mad = np.median(np.abs(s - med))
+    return float(med + k * 1.4826 * mad)
+
+
+def fit_k_for_parity(scores, target_threshold):
+    s = np.asarray(scores)
+    med = np.median(s)
+    mad = np.median(np.abs(s - med)) + 1e-12
+    return float((target_threshold - med) / (1.4826 * mad))
 
 
 def poison(windows, trigger, alpha, fraction, rng):
-    """alpha is the injection strength as a multiple of the filter threshold.
-    alpha=None reproduces the non-adaptive attack: the point is replaced by
-    the trigger outright, with no regard for the filter."""
     out = [w.copy() for w in windows]
     T = windows[0].shape[0]
     n_points = len(windows) * T
-    k = int(n_points * fraction)
+    k = max(1, int(fraction * n_points))
     locs = rng.choice(n_points, size=k, replace=False)
     mask = np.zeros((len(windows), T), dtype=bool)
 
@@ -79,17 +77,14 @@ def poison(windows, trigger, alpha, fraction, rng):
         peak = float((np.abs(direction) / (1.4826 * mad)).max())
         if peak < 1e-9:
             continue
-        scale = min(1.0, (alpha * Z_THRESHOLD) / peak)
-        w[t] = med + direction * scale
+        w[t] = med + direction * min(1.0, (alpha * Z_LOCAL) / peak)
     return out, mask
 
 
-def build_trigger_from_distribution(benign_pool, rng):
-    """Weakest adversary: knows only the benign distribution."""
-    flat = np.concatenate([w for w in benign_pool], axis=0)
-    lo = np.percentile(flat, 1, axis=0)
-    hi = np.percentile(flat, 99, axis=0)
-    return lo + rng.random(flat.shape[1]) * (hi - lo)
+def score_all(target, windows):
+    target.feature_mae = None
+    target.calibrate(windows)
+    return [target.raw_score(w) for w in windows]
 
 
 def run_seed(target, train_windows, all_windows, seed):
@@ -98,53 +93,48 @@ def run_seed(target, train_windows, all_windows, seed):
                      size=min(CALIBRATION_SIZE, len(train_windows)), replace=False)
     calib = [train_windows[i] for i in idx]
 
-    target.feature_mae = None
-    target.calibrate(calib)
-    clean_threshold = target.threshold
+    clean_scores = score_all(target, calib)
+    clean_threshold = est_percentile(clean_scores)
+    k_ref = fit_k_for_parity(clean_scores, clean_threshold)
 
     scores = [target.raw_score(w) for w in all_windows]
     flagged = sorted([(w, s) for w, s in zip(all_windows, scores) if s > clean_threshold],
                      key=lambda p: p[1], reverse=True)
     if not flagged:
         return None
-    probes = [(w, s) for w, s in flagged[:N_PROBES]]
-    benign_scores = [target.raw_score(w) for w in calib]
+    probes = [w for w, _ in flagged[:N_PROBES]]
 
-    out = {"seed": seed, "clean_threshold": clean_threshold, "cells": {}}
+    _, baseline_removal, _ = clean_local(calib)
 
-    _, baseline_removal, _ = filter_windows(calib)
-    out["baseline_removal"] = 100.0 * baseline_removal
+    cells = {}
+    for alpha in ALPHAS + [None]:
+        key = "full" if alpha is None else str(alpha)
+        hidden_undef = hidden_def = 0
+        removals = []
+        for probe in probes:
+            trigger = probe.mean(axis=0)
+            poisoned, mask = poison(calib, trigger, alpha, FRACTION_POISONED, rng)
 
-    for alpha in ALPHAS + [ALPHA_FULL]:
-        for frac in FRACTIONS:
-            trigger = build_trigger_from_distribution(calib, rng)
-            poisoned, mask = poison(calib, trigger, alpha, frac, rng)
+            sc = score_all(target, poisoned)
+            if target.raw_score(probe) <= est_percentile(sc):
+                hidden_undef += 1
 
-            for defended in (False, True):
-                if defended:
-                    used, _, inj_removed = filter_windows(poisoned, injected_mask=mask)
-                else:
-                    used, inj_removed = poisoned, 0.0
+            cleaned, _, inj_removed = clean_local(poisoned, injected_mask=mask)
+            removals.append(inj_removed)
+            sc_c = score_all(target, cleaned)
+            if target.raw_score(probe) <= est_median_mad(sc_c, k=k_ref):
+                hidden_def += 1
 
-                target.feature_mae = None
-                target.calibrate(used)
-                thr = target.threshold
-                hidden = sum(1 for _, s in probes if s <= thr)
-                fa = float(np.mean([s > thr for s in benign_scores]))
+        cells[key] = {
+            "alpha": alpha,
+            "undefended": 100.0 * hidden_undef / len(probes),
+            "defended": 100.0 * hidden_def / len(probes),
+            "injected_removed": 100.0 * float(np.nanmean(removals)),
+        }
+        print(f"[seed {seed}] {key} done", flush=True)
 
-                key = f"{'full' if alpha is None else alpha}_{frac}_{'def' if defended else 'undef'}"
-                out["cells"][key] = {
-                    "alpha": alpha, "fraction": frac, "defended": defended,
-                    "attack_success": 100.0 * hidden / len(probes),
-                    "injected_removed": 100.0 * inj_removed,
-                    "false_alarm": 100.0 * fa,
-                    "threshold": thr,
-                }
-        print(f"[seed {seed}] alpha {'full' if alpha is None else alpha} done", flush=True)
-
-    target.feature_mae = None
-    target.calibrate(calib)
-    return out
+    return {"seed": seed, "k_ref": k_ref,
+            "baseline_removal": 100.0 * baseline_removal, "cells": cells}
 
 
 def main():
@@ -153,114 +143,97 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"[setup] device {device}")
-    print(f"[setup] filter z-threshold {Z_THRESHOLD}, calibration {CALIBRATION_SIZE} windows")
-    print(f"[setup] the adaptive attacker scales its injection to a z-score of")
-    print(f"[setup] alpha * {Z_THRESHOLD}. alpha below 1 evades the filter by")
-    print(f"[setup] construction; alpha above 1 is removed by it.")
-    print(f"[setup] {len(SEEDS)} seeds x {len(ALPHAS)} alphas x {len(FRACTIONS)} "
-          f"fractions x {N_PROBES} probes\n")
+    print(f"[setup] protocol matched to evaluate_calibration_methods.py:")
+    print(f"[setup]   trigger = probe.mean(axis=0), fraction {FRACTION_POISONED},")
+    print(f"[setup]   filter z = {Z_LOCAL}, defended estimator = median+MAD at k_ref")
+    print(f"[setup] the only thing varied is how far each injected point is moved")
+    print(f"[setup] toward the trigger, expressed as a z-score.\n")
 
     ds = DeepAccidentBenignDataset(data_root=REPO_ROOT / cfg["data"]["raw_dir"],
                                    seq_len=cfg["training"]["seq_len"])
-    all_windows = [np.asarray(w, dtype=np.float32) for w in ds.sequences]
+    W = [np.asarray(w, dtype=np.float32) for w in ds.sequences]
     g = torch.Generator().manual_seed(cfg["training"]["seed"])
-    vs = max(1, int(len(all_windows) * cfg["training"]["val_fraction"]))
-    perm = torch.randperm(len(all_windows), generator=g).tolist()
-    train_windows = [all_windows[i] for i in perm[:len(all_windows) - vs]]
-    eval_windows = [all_windows[i] for i in perm[len(all_windows) - vs:][:2000]]
+    vs = max(1, int(len(W) * cfg["training"]["val_fraction"]))
+    perm = torch.randperm(len(W), generator=g).tolist()
+    train_windows = [W[i] for i in perm[:len(W) - vs]]
+    eval_windows = [W[i] for i in perm[len(W) - vs:][:2000]]
 
     target = PAMPOSTarget(
         checkpoint_path=REPO_ROOT / cfg["paths"]["checkpoint_dir"] / "pampos_baseline_best.pt",
         feature_stats_path=REPO_ROOT / "data" / "processed" / "feature_stats.npz",
-        model_config={
-            "input_dim": cfg["model"]["input_dim"],
-            "d_model": cfg["model"]["d_model"],
-            "nhead": cfg["model"]["nhead"],
-            "num_layers": cfg["model"]["num_layers"],
-            "dim_feedforward": cfg["model"]["dim_feedforward"],
-            "dropout": cfg["model"]["dropout"],
-        },
+        model_config={"input_dim": cfg["model"]["input_dim"],
+                      "d_model": cfg["model"]["d_model"],
+                      "nhead": cfg["model"]["nhead"],
+                      "num_layers": cfg["model"]["num_layers"],
+                      "dim_feedforward": cfg["model"]["dim_feedforward"],
+                      "dropout": cfg["model"]["dropout"]},
         device=device)
 
-    trials = []
-    for seed in SEEDS:
-        print(f"[seed {seed}] running...")
-        r = run_seed(target, train_windows, eval_windows, seed)
-        if r:
-            trials.append(r)
-
+    trials = [r for r in (run_seed(target, train_windows, eval_windows, s)
+                          for s in SEEDS) if r]
     if not trials:
         print("[abort] no usable trials")
         return
 
-    base_rm = np.mean([t["baseline_removal"] for t in trials])
+    base_rm = float(np.mean([t["baseline_removal"] for t in trials]))
+
     print()
-    print("=" * 94)
-    print("ADAPTIVE ADVERSARY -- all cells at the same 15% poisoning budget")
-    print("=" * 94)
-    print("alpha is the injection strength as a multiple of the filter's")
-    print(f"z-threshold ({Z_THRESHOLD}). Below 1 the injected point cannot be removed.")
-    print("'full' is the non-adaptive attack: the point is replaced by the trigger")
-    print("outright, ignoring the filter.")
+    print("=" * 92)
+    print("ADAPTIVE ADVERSARY AGAINST THE TEMPORAL-CONSISTENCY FILTER")
+    print("=" * 92)
+    print(f"Every row uses the same {int(FRACTION_POISONED * 100)}% poisoning budget, the same probes,")
+    print(f"and the same trigger derivation. 'full' is the attack as evaluated in")
+    print(f"the paper. A lower alpha moves each injected point less far, staying")
+    print(f"under the filter's z-threshold of {Z_LOCAL} and surviving it.")
     print()
-    print(f"For reference, the filter replaces {base_rm:.1f}% of timesteps in CLEAN")
-    print("calibration data, so a removal rate near that figure means the filter")
-    print("is not singling the injection out.")
-    print()
-    print(f"{'injection':<14}{'undefended':<16}{'defended':<16}"
-          f"{'injected removed':<20}{'false alarms'}")
-    print("-" * 94)
+    print(f"{'injection':<16}{'undefended':<16}{'defended':<18}{'injected removed'}")
+    print("-" * 92)
 
     table = {}
-    order = [str(a) for a in ALPHAS] + ["full"]
-    for a in order:
-        frac = FRACTIONS[0]
-        ku, kd = f"{a}_{frac}_undef", f"{a}_{frac}_def"
-        if ku not in trials[0]["cells"]:
-            continue
-        undef = np.mean([t["cells"][ku]["attack_success"] for t in trials])
-        dfn = np.mean([t["cells"][kd]["attack_success"] for t in trials])
-        rm = np.mean([t["cells"][kd]["injected_removed"] for t in trials])
-        fa = np.mean([t["cells"][kd]["false_alarm"] for t in trials])
-        table[a] = {"undefended": undef, "defended": dfn,
-                    "injected_removed": rm, "false_alarm": fa}
-        label = a if a != "full" else "full (paper)"
-        print(f"{label:<14}{undef:<16.1f}{dfn:<16.1f}{rm:<20.1f}{fa:.2f}")
-    print("-" * 94)
+    for key in [str(a) for a in ALPHAS] + ["full"]:
+        u = float(np.mean([t["cells"][key]["undefended"] for t in trials]))
+        d = float(np.mean([t["cells"][key]["defended"] for t in trials]))
+        sd = float(np.std([t["cells"][key]["defended"] for t in trials]))
+        r = float(np.mean([t["cells"][key]["injected_removed"] for t in trials]))
+        table[key] = {"undefended": u, "defended": d, "defended_sd": sd,
+                      "injected_removed": r}
+        label = "full (paper)" if key == "full" else key
+        print(f"{label:<16}{u:<16.1f}{f'{d:.1f} +/- {sd:.1f}':<18}{r:.1f}")
+    print("-" * 92)
+    print(f"  The filter also replaces {base_rm:.1f}% of timesteps in clean calibration")
+    print(f"  data, so a removal rate near that figure is not selective.")
 
     print()
-    print("=" * 94)
+    print("=" * 92)
     print("READING")
-    print("=" * 94)
+    print("=" * 92)
+    full = table["full"]
     sub = {a: v for a, v in table.items() if a != "full" and float(a) < 1.0}
-    if sub and "full" in table:
-        best_sub = max(sub.items(), key=lambda kv: kv[1]["defended"])
-        full = table["full"]
-        print(f"  non-adaptive attack, defended : {full['defended']:.1f}% "
-              f"({full['injected_removed']:.1f}% of its injection removed)")
-        print(f"  best sub-threshold attack     : alpha {best_sub[0]}, "
-              f"{best_sub[1]['defended']:.1f}% "
-              f"({best_sub[1]['injected_removed']:.1f}% removed)")
-        print()
-        if best_sub[1]["defended"] > full["defended"] + 15:
-            print("  Scaling below the filter threshold recovers a substantial part of")
-            print("  the attack. The defence degrades against an adaptive adversary and")
-            print("  this must be reported as a limitation.")
-        elif best_sub[1]["defended"] > full["defended"] + 5:
-            print("  Sub-threshold injection gives the attacker a modest advantage over")
-            print("  the non-adaptive attack. Report the margin.")
-        else:
-            print("  Sub-threshold injection gives the attacker no advantage: a")
-            print("  perturbation small enough to evade the filter is too small to move")
-            print("  the threshold. The defence is robust to this evasion strategy.")
+    best = max(sub.items(), key=lambda kv: kv[1]["defended"])
+    print(f"  paper's attack, defended  : {full['defended']:.1f}% "
+          f"({full['injected_removed']:.1f}% of the injection removed)")
+    print(f"  best sub-threshold attack : alpha {best[0]}, {best[1]['defended']:.1f}% "
+          f"({best[1]['injected_removed']:.1f}% removed)")
+    print()
+    margin = best[1]["defended"] - full["defended"]
+    if margin > 15:
+        print(f"  Scaling below the filter threshold recovers {margin:.0f} percentage points")
+        print(f"  of attack success. The defence degrades against an adaptive adversary")
+        print(f"  and this must be reported as a limitation.")
+    elif margin > 5:
+        print(f"  Sub-threshold injection gives the attacker {margin:.0f} percentage points")
+        print(f"  over the non-adaptive attack. Report the margin.")
+    else:
+        print(f"  Sub-threshold injection gives no advantage ({margin:+.0f} points): an")
+        print(f"  injection small enough to evade the filter is too small to move the")
+        print(f"  threshold. The defence resists this evasion strategy.")
 
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "adaptive_attacker.json", "w") as f:
-        json.dump({"z_threshold": Z_THRESHOLD, "calibration_size": CALIBRATION_SIZE,
-                   "n_probes": N_PROBES, "seeds": SEEDS,
-                   "alphas": ALPHAS, "fraction": FRACTIONS[0],
-                   "baseline_removal": float(base_rm),
+        json.dump({"z_local": Z_LOCAL, "fraction": FRACTION_POISONED,
+                   "calibration_size": CALIBRATION_SIZE, "n_probes": N_PROBES,
+                   "seeds": SEEDS, "baseline_removal": base_rm,
                    "table": table}, f, indent=2, default=str)
     print(f"\n[done] saved to outputs/results/adaptive_attacker.json")
 
