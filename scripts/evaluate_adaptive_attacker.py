@@ -19,6 +19,8 @@ N_PROBES = 20
 SEEDS = [0, 1, 2]
 ALPHAS = [0.5, 0.7, 0.9, 1.1, 1.5]
 
+K_PARITY_PATH = "outputs/results/calibration_method_comparison.json"
+
 
 def clean_local(windows, z=Z_LOCAL, injected_mask=None):
     W = np.stack(windows)
@@ -87,7 +89,7 @@ def score_all(target, windows):
     return [target.raw_score(w) for w in windows]
 
 
-def run_seed(target, train_windows, all_windows, seed):
+def run_seed(target, train_windows, all_windows, seed, k_ref):
     rng = np.random.default_rng(seed)
     idx = rng.choice(len(train_windows),
                      size=min(CALIBRATION_SIZE, len(train_windows)), replace=False)
@@ -95,7 +97,6 @@ def run_seed(target, train_windows, all_windows, seed):
 
     clean_scores = score_all(target, calib)
     clean_threshold = est_percentile(clean_scores)
-    k_ref = fit_k_for_parity(clean_scores, clean_threshold)
 
     scores = [target.raw_score(w) for w in all_windows]
     flagged = sorted([(w, s) for w, s in zip(all_windows, scores) if s > clean_threshold],
@@ -133,8 +134,8 @@ def run_seed(target, train_windows, all_windows, seed):
         }
         print(f"[seed {seed}] {key} done", flush=True)
 
-    return {"seed": seed, "k_ref": k_ref,
-            "baseline_removal": 100.0 * baseline_removal, "cells": cells}
+    return {"seed": seed, "baseline_removal": 100.0 * baseline_removal,
+            "cells": cells}
 
 
 def main():
@@ -169,7 +170,18 @@ def main():
                       "dropout": cfg["model"]["dropout"]},
         device=device)
 
-    trials = [r for r in (run_seed(target, train_windows, eval_windows, s)
+    kp = REPO_ROOT / K_PARITY_PATH
+    if not kp.exists():
+        print(f"[abort] {K_PARITY_PATH} not found. Run "
+              f"scripts/evaluate_calibration_methods.py first so that the same "
+              f"k is used here as in the paper's defence result.")
+        return
+    k_ref = float(json.load(open(kp))["k_parity"])
+    print(f"[setup] k for median+MAD taken from {K_PARITY_PATH}: {k_ref:.4f}")
+    print(f"[setup] this is the same value the paper's defence result uses, so")
+    print(f"[setup] the 'full' row below must reproduce it.\n")
+
+    trials = [r for r in (run_seed(target, train_windows, eval_windows, s, k_ref)
                           for s in SEEDS) if r]
     if not trials:
         print("[abort] no usable trials")
@@ -208,6 +220,10 @@ def main():
     print("READING")
     print("=" * 92)
     full = table["full"]
+    print(f"  The paper reports 3.3% for this configuration. This run gives")
+    print(f"  {full['defended']:.1f}%. If those differ by more than a few points the")
+    print(f"  protocols are not yet matched and the rows below cannot be trusted.")
+    print()
     sub = {a: v for a, v in table.items() if a != "full" and float(a) < 1.0}
     best = max(sub.items(), key=lambda kv: kv[1]["defended"])
     print(f"  paper's attack, defended  : {full['defended']:.1f}% "
@@ -234,7 +250,7 @@ def main():
         json.dump({"z_local": Z_LOCAL, "fraction": FRACTION_POISONED,
                    "calibration_size": CALIBRATION_SIZE, "n_probes": N_PROBES,
                    "seeds": SEEDS, "baseline_removal": base_rm,
-                   "table": table}, f, indent=2, default=str)
+                   "k_parity": k_ref, "table": table}, f, indent=2, default=str)
     print(f"\n[done] saved to outputs/results/adaptive_attacker.json")
 
 
