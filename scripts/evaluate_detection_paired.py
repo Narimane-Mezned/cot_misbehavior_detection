@@ -177,15 +177,17 @@ def main():
         HORIZON = args.horizon
     if args.topk is not None:
         TOPK = args.topk
-    suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    model_suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    out_suffix = model_suffix
     if args.horizon is not None or args.topk is not None:
-        suffix += f"_h{HORIZON}k{TOPK}"
+        out_suffix += f"_h{HORIZON}k{TOPK}"
         print(f"[setup] horizon {HORIZON}, top-K {TOPK}")
-    if suffix:
-        print(f"[setup] evaluating pampos_baseline{suffix}_best.pt")
+    if model_suffix:
+        print(f"[setup] evaluating pampos_baseline{model_suffix}_best.pt")
 
-    st = np.load(REPO_ROOT / "data" / "processed" / f"feature_stats{suffix}.npz")
-    sc = Scorer(REPO_ROOT / cfg["paths"]["checkpoint_dir"] / f"pampos_baseline{suffix}_best.pt",
+    st = np.load(REPO_ROOT / "data" / "processed" / f"feature_stats{model_suffix}.npz")
+    sc = Scorer(REPO_ROOT / cfg["paths"]["checkpoint_dir"]
+                / f"pampos_baseline{model_suffix}_best.pt",
                 cfg, st["mean"], st["std"], dev)
 
     ds = DeepAccidentBenignDataset(data_root=REPO_ROOT / cfg["data"]["raw_dir"],
@@ -325,7 +327,7 @@ def main():
 
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / f"detection_paired_comparison{suffix}.json", "w") as f:
+    with open(out / f"detection_paired_comparison{out_suffix}.json", "w") as f:
         json.dump({"n_attacked": len(attacked), "n_paired": len(paired_benign),
                    "n_native": len(native), "n_excluded": excluded,
                    "domain_shift": shift, "speed_bands": bands}, f, indent=2, default=str)
