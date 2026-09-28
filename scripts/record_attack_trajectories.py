@@ -262,7 +262,7 @@ def main():
     parser.add_argument("--resume", action="store_true",
                         help="Skip runs whose output file already exists (use after a crash)")
     parser.add_argument("--attacks", type=str,
-                        default="sensor_spoofing,fake_emergency,fake_safety,traffic_light_tampering,universal_perturbation,sybil")
+                        default="sensor_spoofing,fake_emergency,fake_safety,traffic_light_tampering,universal_perturbation,sybil,forced_acceleration")
     args = parser.parse_args()
 
     from src.attacks.environment_attacks.sensor_spoofing import inject_sensor_spoofing

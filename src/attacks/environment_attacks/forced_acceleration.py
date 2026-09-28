@@ -18,12 +18,11 @@ DEFAULT_SPEED_MS = 15.0
 def inject_forced_acceleration(
     replay_state,
     start_frame_idx: int,
-    traffic_manager,
     duration_frames: int = DEFAULT_DURATION_FRAMES,
     target_count: int = DEFAULT_TARGET_COUNT,
     speed_ms: float = DEFAULT_SPEED_MS,
 ) -> AttackRecord:
-    targets = select_unique_lane_targets(replay_state, target_count)
+    targets = select_unique_lane_targets(replay_state, count=target_count)
 
     if not targets:
         return AttackRecord(
@@ -36,7 +35,7 @@ def inject_forced_acceleration(
             metadata={"failed": True},
         )
 
-    affected_track_ids = [tid for tid, _ in targets]
+    affected_track_ids = [t[0] for t in targets]
     end_frame = start_frame_idx + duration_frames
 
     description = (
