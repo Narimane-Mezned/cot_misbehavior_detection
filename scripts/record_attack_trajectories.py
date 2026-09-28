@@ -271,6 +271,7 @@ def main():
     from src.attacks.environment_attacks.traffic_light_tampering import inject_traffic_light_tampering
     from src.attacks.environment_attacks.universal_perturbation import inject_universal_perturbation
     from src.attacks.environment_attacks.sybil import inject_sybil
+    from src.attacks.environment_attacks.forced_acceleration import inject_forced_acceleration
 
     client = None
     for attempt in range(1, 4):
@@ -296,6 +297,7 @@ def main():
         "traffic_light_tampering": (inject_traffic_light_tampering, {}, False),
         "universal_perturbation": (inject_universal_perturbation, {}, False),
         "sybil": (inject_sybil, {}, False),
+        "forced_acceleration": (inject_forced_acceleration, {}, False),
     }
 
     requested = [a.strip() for a in args.attacks.split(",") if a.strip()]
