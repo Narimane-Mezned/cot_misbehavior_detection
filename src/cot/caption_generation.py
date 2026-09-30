@@ -1,3 +1,4 @@
+import hashlib
 import math
 import sys
 from dataclasses import dataclass, field
@@ -45,7 +46,8 @@ def distance_between(a: dict, b: dict) -> float:
 
 
 def _variation_index(seed_parts: tuple, n: int) -> int:
-    return hash(seed_parts) % n
+    digest = hashlib.md5(str(seed_parts).encode()).hexdigest()[:8]
+    return int(digest, 16) % n
 
 
 def find_subject(objects: List[dict], subject_track_id: int) -> Optional[dict]:
@@ -80,8 +82,8 @@ def state_verdict(anomaly_score: float, threshold: float, seed: tuple,
     elif ratio < 2.0:
         level = "moderate"
         options = [
-            f"Flagged as borderline: deviation score {anomaly_score:.3f} exceeds the "
-            f"calibrated threshold ({threshold:.3f}) by {ratio:.1f}x.",
+            f"Flagged as borderline: deviation score {anomaly_score:.3f} is "
+            f"{ratio:.1f}x the calibrated threshold ({threshold:.3f}).",
             f"Mildly suspicious -- {anomaly_score:.3f} against a threshold of "
             f"{threshold:.3f} ({ratio:.1f}x).",
         ]
@@ -146,10 +148,14 @@ def describe_evidence(feature_errors: Optional[List[float]], is_flagged: bool = 
         lead = "The deviation comes from"
 
     caveat = ""
-    if dominant in RELATIVE_FEATURES and ego_speed_changed:
-        caveat = (f" Distance to ego is a relative quantity and the ego vehicle's own speed "
-                  f"changed over this window, so this residual is not attributable to the "
-                  f"{agent_noun} alone.")
+    if dominant in RELATIVE_FEATURES:
+        if ego_speed_changed:
+            caveat = (f" Distance to ego is a relative quantity and the ego vehicle's own speed "
+                      f"changed over this window, so this residual is not attributable to the "
+                      f"{agent_noun} alone.")
+        else:
+            caveat = (f" Distance to ego is a relative quantity: it depends on both vehicles, so "
+                      f"this residual cannot be attributed to the {agent_noun} on its own.")
 
     return (f"{lead}: {', '.join(parts)} -- these are per-feature ratios, not the "
             f"aggregate's ratio to threshold.{caveat}", [name for name, _ in top])
@@ -246,7 +252,8 @@ def describe_context(meta: dict, num_agents: int) -> str:
 def describe_attack(attack_record: Optional[object],
                     clean_score: Optional[float],
                     poisoned_score: Optional[float],
-                    threshold: float) -> tuple:
+                    threshold: float,
+                    agent_noun: str = "vehicle") -> tuple:
     if attack_record is None:
         return "", None
 
@@ -259,12 +266,12 @@ def describe_attack(attack_record: Optional[object],
         if was_flagged and not now_flagged:
             severity = clean_score / threshold if threshold > 0 else 0.0
             if severity >= 2.0:
-                headline = ("WARNING -- DETECTION COMPROMISED. A strongly suspicious vehicle has "
-                            "been hidden from the detector.")
+                headline = (f"WARNING -- DETECTION COMPROMISED. A strongly suspicious "
+                            f"{agent_noun} has been hidden from the detector.")
             else:
-                headline = ("CAUTION -- DETECTION COMPROMISED. A borderline detection has been "
-                            "suppressed; the vehicle itself was only mildly suspicious, but the "
-                            "calibration is nonetheless tampered with.")
+                headline = (f"CAUTION -- DETECTION COMPROMISED. A borderline detection has been "
+                            f"suppressed; the {agent_noun} itself was only mildly suspicious, "
+                            f"but the calibration is nonetheless tampered with.")
             return (f"{headline} A {attack_type} poisoned the calibration data: the deployed "
                     f"detector reports {poisoned_score:.3f} (apparently safe) but the untampered "
                     f"baseline gives {clean_score:.3f}. Recalibrate from clean data before "
@@ -276,7 +283,7 @@ def describe_attack(attack_record: Optional[object],
                     f"the score moved from {clean_score:.3f} to {poisoned_score:.3f}, making "
                     f"detection more likely rather than less. This attack applies a uniform "
                     f"shift across all calibration data and does not target any individual "
-                    f"vehicle.", None)
+                    f"{agent_noun}.", None)
 
         return (f"A {attack_type} was applied to the calibration data; the score moved from "
                 f"{clean_score:.3f} to {poisoned_score:.3f} and the detection outcome is "
@@ -366,7 +373,8 @@ def generate_cot_caption(
                                                 is_flagged=(true_score > threshold),
                                                 category=category)
     context_text = describe_context(meta, max(0, len(objects) - 1))
-    attack_text, override_level = describe_attack(attack_record, clean_score, poisoned_score, threshold)
+    attack_text, override_level = describe_attack(attack_record, clean_score, poisoned_score,
+                                                 threshold, agent_noun)
     ego_text = describe_ego_response(ego_obj, ego_future_obj)
 
     detector_status = override_level if override_level == "compromised" else "intact"
