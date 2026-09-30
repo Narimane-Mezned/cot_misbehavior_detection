@@ -20,12 +20,13 @@ LABELS = {
     "speed_shortfall": "Rollout, speed shortfall",
 }
 STYLE = {
-    "random": dict(color="0.65", ls=":", lw=1.2),
-    "heuristic": dict(color="0.45", ls="-.", lw=1.2),
-    "single_step": dict(color="0.15", ls="--", lw=1.6),
-    "total": dict(color="0.35", ls="-", lw=1.2),
-    "speed_shortfall": dict(color="black", ls="-", lw=2.2),
+    "random":          dict(color="#9aa0a6", ls=":",  lw=1.4, zorder=2),
+    "heuristic":       dict(color="#e8a33d", ls="-.", lw=1.7, zorder=3),
+    "single_step":     dict(color="#d1495b", ls="--", lw=2.0, zorder=4),
+    "total":           dict(color="#4a7fb5", ls="-",  lw=1.7, zorder=3),
+    "speed_shortfall": dict(color="#2a9d5c", ls="-",  lw=3.0, zorder=6),
 }
+FILL = "#2a9d5c"
 
 
 def _tie_aware_curve(benign, attacked):
@@ -110,14 +111,14 @@ def main():
         summary[m] = {"auc": auc, "average_precision": ap}
         print(f"  {LABELS[m]:<30} AUC {auc:.4f}   AP {ap:.4f}")
 
-    axes[0].plot([0, 1], [0, 1], color="0.8", lw=0.8, zorder=0)
+    axes[0].plot([0, 1], [0, 1], color="#c9ccd1", lw=1.0, ls=(0, (4, 3)), zorder=1)
     axes[0].set_xlabel("False-alarm rate")
     axes[0].set_ylabel("Detection rate")
     axes[0].set_title("ROC", fontsize=10)
     axes[0].set_xlim(0, 1)
     axes[0].set_ylim(0, 1.02)
 
-    axes[1].axhline(n_a / (n_a + n_b), color="0.8", lw=0.8, zorder=0)
+    axes[1].axhline(n_a / (n_a + n_b), color="#c9ccd1", lw=1.0, ls=(0, (4, 3)), zorder=1)
     axes[1].set_xlabel("Recall")
     axes[1].set_ylabel("Precision")
     axes[1].set_title("Precision-recall", fontsize=10)
@@ -125,9 +126,12 @@ def main():
     axes[1].set_ylim(0, 1.02)
 
     for ax in axes:
-        ax.tick_params(labelsize=8)
+        ax.set_facecolor("#fbfbfc")
+        ax.tick_params(labelsize=8, length=0)
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color("#c9ccd1")
 
     axes[0].legend(fontsize=6.5, loc="lower right", frameon=False)
     fig.tight_layout()
@@ -137,23 +141,34 @@ def main():
     fig.savefig(out / "detection_curves.pdf", bbox_inches="tight")
     fig.savefig(out / "detection_curves.png", dpi=200, bbox_inches="tight")
 
-    fig2, ax = plt.subplots(figsize=(3.4, 2.8))
+    fig2, ax = plt.subplots(figsize=(3.5, 3.0))
+    ax.set_facecolor("#fbfbfc")
+    for gl in np.arange(0.2, 1.01, 0.2):
+        ax.axhline(gl, color="white", lw=1.0, zorder=0)
+        ax.axvline(gl, color="white", lw=1.0, zorder=0)
+    ax.plot([0, 1], [0, 1], color="#c9ccd1", lw=1.0, ls=(0, (4, 3)), zorder=1)
+
     for m in measures:
         b = np.asarray(benign[m], dtype=float)
         a = np.asarray(attacked[m], dtype=float)
         fpr, tpr, auc = roc_points(b, a)
-        ax.plot(fpr, tpr, label=f"{LABELS[m]} ({auc:.3f})", **STYLE[m])
-    ax.plot([0, 1], [0, 1], color="0.8", lw=0.8, zorder=0)
-    ax.set_xlabel("False-alarm rate")
-    ax.set_ylabel("Detection rate")
+        ax.plot(fpr, tpr, label=f"{LABELS[m]}  {auc:.3f}", **STYLE[m])
+    ax.set_xlabel("False-alarm rate", fontsize=9)
+    ax.set_ylabel("Detection rate", fontsize=9)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.02)
-    ax.tick_params(labelsize=8)
+    ax.tick_params(labelsize=8, length=0)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
-    ax.legend(fontsize=6, loc="lower right", frameon=False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#c9ccd1")
+    leg = ax.legend(fontsize=6.4, loc="lower right", frameon=True,
+                    framealpha=0.94, edgecolor="#dfe1e5", borderpad=0.5,
+                    handlelength=2.2, labelspacing=0.45)
+    leg.get_frame().set_linewidth(0.6)
     fig2.tight_layout()
     fig2.savefig(out / "detection_roc_single_column.pdf", bbox_inches="tight")
+    fig2.savefig(out / "detection_roc_single_column.png", dpi=220, bbox_inches="tight")
 
     with open(REPO_ROOT / "outputs" / "results" / "detection_curves.json", "w") as f:
         json.dump({"n_benign": n_b, "n_attacked": n_a, "summary": summary},
