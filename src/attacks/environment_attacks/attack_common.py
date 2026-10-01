@@ -1,9 +1,39 @@
 import math
 
 
-def get_agent_speed(agent) -> float:
+def get_agent_speed(agent, replay_state=None, frame_idx=None) -> float:
+    """Replayed agents are positioned with set_transform rather than driven, so
+    the physics velocity CARLA reports for them is identically zero. Speed is
+    therefore read from the ground-truth label file for the current frame, and
+    falls back to the physics velocity only when that is unavailable."""
+    speed = recorded_speed(replay_state, getattr(agent, "track_id", None), frame_idx)
+    if speed == speed:                      # not NaN
+        return speed
     velocity = agent.actor.get_velocity()
     return math.sqrt(velocity.x ** 2 + velocity.y ** 2)
+
+
+def recorded_speed(replay_state, track_id, frame_idx=None) -> float:
+    """Ground-truth speed of one track at a frame, taken from the label file's
+    vx and vy fields. Returns NaN when it cannot be determined."""
+    if replay_state is None or track_id is None:
+        return float("nan")
+    files = getattr(replay_state, "frame_files", None)
+    if not files:
+        return float("nan")
+    if frame_idx is None:
+        frame_idx = getattr(replay_state, "current_frame_idx", 0)
+    if not (0 <= frame_idx < len(files)):
+        return float("nan")
+    try:
+        from src.data_pipeline.deepaccident_loader import parse_label_file
+        parsed = parse_label_file(files[frame_idx])
+    except Exception:
+        return float("nan")
+    for obj in parsed.get("objects", []):
+        if str(obj.get("track_id")) == str(track_id):
+            return math.hypot(float(obj.get("vx", 0.0)), float(obj.get("vy", 0.0)))
+    return float("nan")
 
 
 def get_lane_id(replay_state, agent) -> int:
@@ -30,7 +60,8 @@ def select_unique_lane_targets(replay_state, count: int, exclude_track_ids: set 
     for track_id, agent in replay_state.agents.items():
         if track_id in exclude_track_ids or agent.actor is None:
             continue
-        speed = get_agent_speed(agent)
+        speed = get_agent_speed(agent, replay_state,
+                                getattr(replay_state, "current_frame_idx", None))
         if speed < min_speed_ms:
             skipped_stationary += 1
             continue
@@ -40,6 +71,10 @@ def select_unique_lane_targets(replay_state, count: int, exclude_track_ids: set 
     if skipped_stationary:
         print(f"[targets] skipped {skipped_stationary} agent(s) below "
               f"{min_speed_ms} m/s -- an attack cannot slow a stationary vehicle")
+    if not candidates and skipped_stationary:
+        print(f"[targets] WARNING: every agent was judged stationary. During "
+              f"replay the physics velocity is zero, so this means the recorded "
+              f"trajectory was unavailable and the fallback was used.")
 
     if sort_by_speed_desc:
         candidates.sort(key=lambda c: c[3], reverse=True)

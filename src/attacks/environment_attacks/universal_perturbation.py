@@ -51,7 +51,9 @@ def inject_universal_perturbation(
         tid for tid, agent in replay_state.agents.items()
         if agent.actor is not None
         and int(tid) not in (UNTRACKED_TRACK_ID, EGO_TRACK_ID)
-        and get_agent_speed(agent) >= MIN_TARGET_SPEED_MS
+        and get_agent_speed(agent, replay_state,
+                            getattr(replay_state, "current_frame_idx", None))
+            >= MIN_TARGET_SPEED_MS
     ]
 
     if not affected_track_ids:
