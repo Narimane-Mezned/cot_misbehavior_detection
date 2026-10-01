@@ -50,7 +50,8 @@ MIN_TARGET_SPEED_MS = 1.0
 
 def select_unique_lane_targets(replay_state, count: int, exclude_track_ids: set = None,
                                sort_by_speed_desc: bool = False,
-                               min_speed_ms: float = MIN_TARGET_SPEED_MS):
+                               min_speed_ms: float = MIN_TARGET_SPEED_MS,
+                               frame_idx: int = None):
     exclude_track_ids = set(exclude_track_ids or set())
     exclude_track_ids.update({UNTRACKED_TRACK_ID, EGO_TRACK_ID,
                               str(UNTRACKED_TRACK_ID), str(EGO_TRACK_ID)})
@@ -60,8 +61,7 @@ def select_unique_lane_targets(replay_state, count: int, exclude_track_ids: set 
     for track_id, agent in replay_state.agents.items():
         if track_id in exclude_track_ids or agent.actor is None:
             continue
-        speed = get_agent_speed(agent, replay_state,
-                                getattr(replay_state, "current_frame_idx", None))
+        speed = get_agent_speed(agent, replay_state, frame_idx)
         if speed < min_speed_ms:
             skipped_stationary += 1
             continue

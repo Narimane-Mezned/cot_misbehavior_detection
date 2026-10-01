@@ -25,7 +25,8 @@ def inject_fake_safety(
 ) -> AttackRecord:
     import math
 
-    targets = select_unique_lane_targets(replay_state, count=count)
+    targets = select_unique_lane_targets(replay_state, count=count,
+                                        frame_idx=start_frame_idx)
 
     if not targets:
         return AttackRecord(

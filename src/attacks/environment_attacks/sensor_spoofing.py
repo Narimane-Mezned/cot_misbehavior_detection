@@ -26,7 +26,9 @@ def inject_sensor_spoofing(
 ) -> AttackRecord:
     import math
 
-    targets = select_unique_lane_targets(replay_state, count=num_obstacles, sort_by_speed_desc=True)
+    targets = select_unique_lane_targets(replay_state, count=num_obstacles,
+                                        sort_by_speed_desc=True,
+                                        frame_idx=start_frame_idx)
 
     if not targets:
         return AttackRecord(

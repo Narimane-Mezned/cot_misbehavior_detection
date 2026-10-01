@@ -83,9 +83,7 @@ def inject_sybil(
         )
 
     end_frame = min(start_frame_idx + duration_frames, len(replay_state.frame_files) - 1)
-    crawl_speed_ms = max(0.5, get_agent_speed(
-        attacker_agent, replay_state,
-        getattr(replay_state, "current_frame_idx", None)) * 0.15)
+    crawl_speed_ms = max(0.5, get_agent_speed(attacker_agent, replay_state, start_frame_idx) * 0.15)
 
     description = (
         f"Vehicle track_id={attacker_track_id}'s identity (same vehicle type, spawned near its position) "

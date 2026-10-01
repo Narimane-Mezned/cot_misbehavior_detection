@@ -35,7 +35,8 @@ def inject_traffic_light_tampering(
             metadata={"failed": True},
         )
 
-    targets = select_unique_lane_targets(replay_state, count=2)
+    targets = select_unique_lane_targets(replay_state, count=2,
+                                        frame_idx=start_frame_idx)
     affected_track_ids = [t[0] for t in targets]
 
     num_target = max(1, int(len(all_lights) * ratio))

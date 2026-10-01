@@ -22,7 +22,8 @@ def inject_forced_acceleration(
     target_count: int = DEFAULT_TARGET_COUNT,
     speed_ms: float = DEFAULT_SPEED_MS,
 ) -> AttackRecord:
-    targets = select_unique_lane_targets(replay_state, count=target_count)
+    targets = select_unique_lane_targets(replay_state, count=target_count,
+                                        frame_idx=start_frame_idx)
 
     if not targets:
         return AttackRecord(
