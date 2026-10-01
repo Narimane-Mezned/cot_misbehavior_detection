@@ -170,17 +170,29 @@ def main():
                       "dropout": cfg["model"]["dropout"]},
         device=device)
 
+    _cache = {}
+
     def setup(seed):
-        rng = np.random.default_rng(seed)
-        idx = rng.choice(len(train_windows),
-                         size=min(CALIBRATION_SIZE, len(train_windows)), replace=False)
-        calib = [np.asarray(train_windows[i], dtype=np.float32) for i in idx]
-        clean_thr = est_percentile(score_all(target, calib))
-        sc = np.asarray([target.raw_score(w) for w in all_windows])
-        order = np.argsort(-sc)
-        probes = [np.asarray(all_windows[i], dtype=np.float32)
-                  for i in order[:N_PROBES] if sc[i] > clean_thr]
-        return rng, calib, probes, sc
+        """The calibration draw, the probe set and thewindow scores depend only on
+        the seed, not on the pass count or the contamination rate. Scoring all
+        91,697 windows is by far the most expensive step here, so it is done
+        once per seed and reused."""
+        if seed not in _cache:
+            rng = np.random.default_rng(seed)
+            idx = rng.choice(len(train_windows),
+                             size=min(CALIBRATION_SIZE, len(train_windows)),
+                             replace=False)
+            calib = [np.asarray(train_windows[i], dtype=np.float32) for i in idx]
+            clean_thr = est_percentile(score_all(target, calib))
+            print(f"[cache] scoring all {len(all_windows)} windows for seed {seed}",
+                  flush=True)
+            sc = np.asarray([target.raw_score(w) for w in all_windows])
+            order = np.argsort(-sc)
+            probes = [np.asarray(all_windows[i], dtype=np.float32)
+                      for i in order[:N_PROBES] if sc[i] > clean_thr]
+            _cache[seed] = (calib, probes, sc)
+        calib, probes, sc = _cache[seed]
+        return np.random.default_rng(seed + 1000), calib, probes, sc
 
     # ---- part 1: contamination sweep -------------------------------------
     sweep = {}
