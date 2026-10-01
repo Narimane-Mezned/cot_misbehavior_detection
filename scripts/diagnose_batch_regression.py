@@ -25,29 +25,23 @@ def targets(run):
 
 
 def speeds_at_frame(run, frame_idx):
-    """Speed of every agent at a given frame of the recorded trajectory."""
+    """Agents are stored as a dict keyed by track id, holding position and
+    heading only, so speed is derived from the displacement between this
+    frame and the next divided by the simulator step."""
     traj = (run or {}).get("trajectory") or []
-    if frame_idx >= len(traj):
+    if frame_idx + 1 >= len(traj):
         return {}
-    frame = traj[frame_idx]
-    agents = frame.get("agents") if isinstance(frame, dict) else None
-    if not agents:
-        return {}
+    dt = (run or {}).get("fixed_delta_seconds") or 0.1
+    a0 = traj[frame_idx].get("agents") or {}
+    a1 = traj[frame_idx + 1].get("agents") or {}
     out = {}
-    for a in agents:
-        if not isinstance(a, dict):
+    for tid, p0 in a0.items():
+        p1 = a1.get(tid)
+        if not isinstance(p0, dict) or not isinstance(p1, dict):
             continue
-        tid = str(a.get("track_id"))
-        v = a.get("velocity")
-        if isinstance(v, dict):
-            sp = math.hypot(v.get("x", 0.0), v.get("y", 0.0))
-        elif isinstance(v, (list, tuple)) and len(v) >= 2:
-            sp = math.hypot(v[0], v[1])
-        else:
-            sp = a.get("speed")
-            if sp is None:
-                continue
-        out[tid] = float(sp)
+        d = math.hypot(p1.get("x", 0.0) - p0.get("x", 0.0),
+                       p1.get("y", 0.0) - p0.get("y", 0.0))
+        out[str(tid)] = d / dt
     return out
 
 
