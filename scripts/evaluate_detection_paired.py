@@ -29,13 +29,17 @@ TOPK = 3
 MIN_EFFECT_MS = 1.0
 SPEED_BANDS = [(0.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)]
 
-MEASURES = ["random", "heuristic", "single_step", "total", "speed_shortfall"]
+MEASURES = ["random", "heuristic", "single_step", "total", "speed_shortfall",
+            "lateral_divergence", "heading_change", "combined"]
 MAD_SCALE = 1.4826
 LABELS = {"random": "Random",
           "heuristic": "Speed-change heuristic",
           "single_step": "Single-step, 8-feature (as published)",
           "total": "Rollout, total divergence",
-          "speed_shortfall": "Rollout, speed shortfall"}
+          "speed_shortfall": "Rollout, speed shortfall",
+          "lateral_divergence": "Rollout, lateral divergence",
+          "heading_change": "Rollout, heading change",
+          "combined": "Rollout, shortfall + lateral"}
 
 
 def stable_seed(key):
@@ -149,13 +153,36 @@ class Scorer:
         im = im_n.squeeze(0).cpu().numpy() * self.sd + self.mn
         sf = float(np.mean(np.maximum(np.linalg.norm(im[:, 2:4], axis=1)
                                       - np.linalg.norm(actual[:, 2:4], axis=1), 0.0)))
-        return total, sf
+
+        # Lateral divergence: how far the observed position sits from the
+        # imagined one across the imagined direction of travel. Speed
+        # shortfall is blind to this by construction, since a vehicle pushed
+        # sideways need not be slower than predicted.
+        dpos = actual[:, 0:2] - im[:, 0:2]
+        v = im[:, 2:4]
+        sp = np.linalg.norm(v, axis=1)
+        moving = sp > 1e-6
+        lat = np.zeros(len(dpos))
+        if moving.any():
+            heading = v[moving] / sp[moving, None]
+            normal = np.stack([-heading[:, 1], heading[:, 0]], axis=1)
+            lat[moving] = np.abs((dpos[moving] * normal).sum(axis=1))
+        ld = float(np.mean(lat))
+
+        # Heading change: absolute departure from the imagined heading,
+        # wrapped to [-pi, pi].
+        dyaw = actual[:, 4] - im[:, 4]
+        dyaw = (dyaw + np.pi) % (2 * np.pi) - np.pi
+        hc = float(np.mean(np.abs(dyaw)))
+        return total, sf, ld, hc
 
     def all_measures(self, seed, actual, key):
         full = np.concatenate([seed, actual], axis=0)
-        total, sf = self.rollout(seed, actual)
+        total, sf, ld, hc = self.rollout(seed, actual)
         return {"single_step": self.single_step(full), "total": total,
-                "speed_shortfall": sf, "heuristic": heuristic(full),
+                "speed_shortfall": sf, "lateral_divergence": ld,
+                "heading_change": hc, "combined": sf + ld,
+                "heuristic": heuristic(full),
                 "random": float(np.random.default_rng(stable_seed(key)).random())}
 
 
