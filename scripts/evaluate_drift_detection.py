@@ -15,7 +15,9 @@ from src.attacks.adversarial_ml_attacks.pampos_target_wrapper import PAMPOSTarge
 
 Z_LOCAL = 1.5
 CALIBRATION_SIZE = 300
-RATES = [0.01, 0.05, 0.10, 0.15, 0.30]
+RATES = [0.01, 0.05, 0.15, 0.30]
+PGD_STEPS = 40
+PGD_LR = 0.15
 N_CLEAN_TRIALS = 30
 N_SEEDS = 3
 K_PARITY_PATH = "outputs/results/calibration_method_comparison.json"
@@ -31,13 +33,72 @@ def score_all(target, windows):
     return [target.raw_score(w) for w in windows]
 
 
-def poison(windows, trigger, fraction, rng):
+def _box(window, t, z=Z_LOCAL):
+    others = np.delete(window, t, axis=0)
+    med = np.median(others, axis=0)
+    mad = np.median(np.abs(others - med), axis=0) + 1e-8
+    half = z * 1.4826 * mad
+    return med - half, med + half
+
+
+def poison(windows, trigger, fraction, rng, mode="full",
+           target=None, mean=None, std=None, device=None):
+    """mode "full" repeats one trigger vector at every injected point.
+    "sub-threshold" and "white-box" are the adaptive attackers of
+    Section 5.3: each injected point is distinct and stays inside the
+    filter's feasible box. They matter here because a repeated constant
+    distorts the per-feature error scale far more than a set of distinct
+    values does, and a drift monitor that caught only the constant would be
+    attack-specific."""
     out = [w.copy() for w in windows]
     T = windows[0].shape[0]
     k = max(1, int(fraction * len(windows) * T))
-    for loc in rng.choice(len(windows) * T, size=k, replace=False):
+    locs = rng.choice(len(windows) * T, size=k, replace=False)
+
+    if mode == "full":
+        for loc in locs:
+            wi, t = divmod(loc, T)
+            out[wi][t] = trigger
+        return out
+
+    if mode == "sub-threshold":
+        for loc in locs:
+            wi, t = divmod(loc, T)
+            w = out[wi]
+            lo, hi = _box(w, t)
+            med = 0.5 * (lo + hi)
+            w[t] = np.clip(med + (trigger - med) * 0.9, lo, hi)
+        return out
+
+    from src.model.losses import per_feature_errors, normalize_errors, topk_anomaly_score
+    by_window = {}
+    for loc in locs:
         wi, t = divmod(loc, T)
-        out[wi][t] = trigger
+        by_window.setdefault(wi, []).append(t)
+    for wi, ts in by_window.items():
+        w = out[wi]
+        boxes = {t: _box(w, t) for t in ts}
+        x = torch.tensor((w - mean) / std, dtype=torch.float32,
+                         device=device, requires_grad=True)
+        idx = torch.tensor(ts, dtype=torch.long, device=device)
+        lo = torch.stack([torch.tensor((boxes[t][0] - mean) / std,
+                                       dtype=torch.float32, device=device) for t in ts])
+        hi = torch.stack([torch.tensor((boxes[t][1] - mean) / std,
+                                       dtype=torch.float32, device=device) for t in ts])
+        for _ in range(PGD_STEPS):
+            if x.grad is not None:
+                x.grad.zero_()
+            preds = target.model(x.unsqueeze(0)[:, :-1, :])
+            err = per_feature_errors(preds, x.unsqueeze(0)[:, 1:, :])
+            if target.feature_mae is not None:
+                err = normalize_errors(err, target.feature_mae)
+            topk_anomaly_score(err, k=3).mean().backward()
+            with torch.no_grad():
+                upd = x.clone()
+                upd[idx] = torch.max(torch.min(x[idx] + PGD_LR * torch.sign(x.grad[idx]),
+                                               hi), lo)
+                x = upd.detach().requires_grad_(True)
+        out[wi] = (x.detach().cpu().numpy() * std + mean).astype(np.float32)
     return out
 
 
@@ -125,27 +186,35 @@ def main():
     probe = np.asarray(all_windows[order[0]], dtype=np.float32)
     trigger = probe.mean(axis=0)
 
+    stats = np.load(REPO_ROOT / "data" / "processed" / "feature_stats.npz")
+    mean, std = stats["mean"].astype(np.float32), stats["std"].astype(np.float32)
+
     results = {}
-    for rate in RATES:
-        drifts = []
-        for s in range(N_SEEDS):
-            rng = np.random.default_rng(2000 + s)
-            idx = rng.choice(len(train_windows), size=CALIBRATION_SIZE, replace=False)
-            cal = [np.asarray(train_windows[j], dtype=np.float32) for j in idx]
-            pois = poison(cal, trigger, rate, rng)
-            thr = est_percentile(score_all(target, pois))
-            d, dt, dm = drift_statistic(thr, target.feature_mae.cpu().numpy(),
-                                        base_thr, base_mae)
-            drifts.append((d, dt, dm))
-        d = np.array([x[0] for x in drifts])
-        results[rate] = {"drift": float(np.mean(d)), "sd": float(np.std(d)),
-                         "detected": 100.0 * float((d > alarm).mean()),
-                         "d_threshold": float(np.mean([x[1] for x in drifts])),
-                         "d_scale": float(np.mean([x[2] for x in drifts]))}
-        print(f"[rate {int(rate*100):>3}%] drift {np.mean(d):.4f} "
-              f"(threshold {results[rate]['d_threshold']:.4f}, "
-              f"scale {results[rate]['d_scale']:.4f})  "
-              f"flagged {results[rate]['detected']:.0f}%", flush=True)
+    for mode in ["full", "sub-threshold", "white-box"]:
+        for rate in RATES:
+            drifts = []
+            for si in range(N_SEEDS):
+                rng = np.random.default_rng(2000 + si)
+                idx = rng.choice(len(train_windows), size=CALIBRATION_SIZE,
+                                 replace=False)
+                cal = [np.asarray(train_windows[j], dtype=np.float32) for j in idx]
+                pois = poison(cal, trigger, rate, rng, mode,
+                              target, mean, std, device)
+                thr = est_percentile(score_all(target, pois))
+                d, dt, dm = drift_statistic(thr, target.feature_mae.cpu().numpy(),
+                                            base_thr, base_mae)
+                drifts.append((d, dt, dm))
+            dd = np.array([x[0] for x in drifts])
+            results[(mode, rate)] = {
+                "drift": float(np.mean(dd)), "sd": float(np.std(dd)),
+                "detected": 100.0 * float((dd > alarm).mean()),
+                "d_threshold": float(np.mean([x[1] for x in drifts])),
+                "d_scale": float(np.mean([x[2] for x in drifts]))}
+            r = results[(mode, rate)]
+            print(f"[{mode:<14}{int(rate*100):>3}%] drift {r['drift']:10.4f}  "
+                  f"(thr {r['d_threshold']:7.4f}, scale {r['d_scale']:10.4f})  "
+                  f"flagged {r['detected']:3.0f}%", flush=True)
+        print(flush=True)
 
     print()
     print("=" * 80)
@@ -156,42 +225,48 @@ def main():
     print(f"recalibrations. No reference score and no external information "
           f"are used.")
     print()
-    print("%-12s%-16s%-16s%s" % ("poisoned", "drift", "vs alarm", "flagged"))
+    print("%-16s%-8s%-24s%-13s%s" % ("attacker", "rate", "drift",
+                                      "vs alarm", "flagged"))
     print("-" * 80)
-    print("%-12s%-16s%-16s%s" % ("none (clean)",
-                                 "%.4f" % float(np.median(clean)),
-                                 "below", "%.0f%%" % fp))
-    for rate in RATES:
-        r = results[rate]
-        print("%-12s%-16s%-16s%s" % (
-            "%d%%" % int(rate * 100),
-            "%.4f +/- %.4f" % (r["drift"], r["sd"]),
-            "%.1fx" % (r["drift"] / alarm if alarm > 0 else 0),
-            "%.0f%%" % r["detected"]))
+    print("%-16s%-8s%-24s%-13s%s" % ("none (clean)", "--",
+                                     "%.4f" % float(np.median(clean)),
+                                     "below", "%.0f%%" % fp))
+    for mode in ["full", "sub-threshold", "white-box"]:
+        for rate in RATES:
+            r = results[(mode, rate)]
+            print("%-16s%-8s%-24s%-13s%s" % (
+                mode if rate == RATES[0] else "",
+                "%d%%" % int(rate * 100),
+                "%.4f +/- %.4f" % (r["drift"], r["sd"]),
+                "%.1fx" % (r["drift"] / alarm if alarm > 0 else 0),
+                "%.0f%%" % r["detected"]))
     print("-" * 80)
 
     print()
     print("=" * 80)
     print("READING")
     print("=" * 80)
-    worst = min(RATES)
-    if results[worst]["detected"] >= 100:
-        print(f"  Every poisoned recalibration is flagged, down to "
-              f"{int(worst*100)}% contamination,")
-        print(f"  at a {fp:.0f}% false-positive rate on ordinary recalibration. The")
-        print(f"  explanation layer can therefore raise the integrity warning from")
-        print(f"  the detector's own stored history, without the reference score")
-        print(f"  the experiments above supplied.")
+    cells = [(m, r) for m in ["full", "sub-threshold", "white-box"] for r in RATES]
+    worst_cell = min(cells, key=lambda k: results[k]["detected"])
+    worst = results[worst_cell]["detected"]
+    print(f"  weakest cell: {worst_cell[0]} at {int(worst_cell[1]*100)}% "
+          f"-> {worst:.0f}% flagged, drift "
+          f"{results[worst_cell]['drift']:.4f} against an alarm of {alarm:.4f}")
+    print()
+    if worst >= 100:
+        print("  Every poisoned recalibration is flagged, for every attacker and")
+        print("  every rate tested, at a %.0f%% false-positive rate on ordinary" % fp)
+        print("  recalibration. The explanation layer can therefore raise the")
+        print("  integrity warning from the detector's own stored history, without")
+        print("  the reference score the earlier experiments supplied.")
+    elif worst >= 80:
+        print("  Detection is high but not complete. Report the weakest cell as")
+        print("  the bound rather than the strongest as the headline.")
     else:
-        lowest = min((r for r in RATES if results[r]["detected"] >= 100), default=None)
-        if lowest:
-            print(f"  Poisoning is detected reliably from {int(lowest*100)}% upward.")
-            print(f"  Below that the drift is within ordinary recalibration variation,")
-            print(f"  so the method bounds what it can claim rather than detecting all.")
-        else:
-            print(f"  Drift does not separate poisoned from ordinary recalibration at")
-            print(f"  the rates tested. The limitation stands, now with evidence that")
-            print(f"  a threshold-drift monitor was tried and found insufficient.")
+        print("  Drift catches the constant-trigger attack but not the adaptive")
+        print("  ones, which place distinct values and distort the error scale far")
+        print("  less. A drift monitor would therefore be attack-specific, and the")
+        print("  limitation stands with evidence that it was tried.")
 
     out = REPO_ROOT / "outputs" / "results"
     out.mkdir(parents=True, exist_ok=True)
@@ -201,7 +276,7 @@ def main():
                    "clean_max": float(clean.max()),
                    "false_positive_pct": fp,
                    "n_clean_trials": N_CLEAN_TRIALS, "n_seeds": N_SEEDS,
-                   "results": {str(k): v for k, v in results.items()}},
+                   "results": {f"{m}_{r}": v for (m, r), v in results.items()}},
                   f, indent=2, default=str)
     print(f"\n[done] saved to outputs/results/drift_detection.json")
 
