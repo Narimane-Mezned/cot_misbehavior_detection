@@ -208,6 +208,14 @@ def main():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--traj-dir", default="data/attack_trajectories",
+                        help="directory of attack trajectories, relative to "
+                             "the repository root. Point this at a separate "
+                             "folder to evaluate a new batch without touching "
+                             "the one the published results came from.")
+    parser.add_argument("--tag", default="",
+                        help="suffix for the output file, so a run against a "
+                             "new batch does not overwrite an existing result")
     parser.add_argument("--family", choices=["suppression", "acceleration"],
                         default="suppression",
                         help="which attack family to evaluate; this sets both "
@@ -238,6 +246,8 @@ def main():
     model_suffix = f"_seed{args.seed}" if args.seed is not None else ""
     out_suffix = model_suffix + (f"_{args.family}"
                                  if args.family != "suppression" else "")
+    if args.tag:
+        out_suffix += f"_{args.tag}"
     if args.horizon is not None or args.topk is not None:
         out_suffix += f"_h{HORIZON}k{TOPK}"
         print(f"[setup] horizon {HORIZON}, top-K {TOPK}")
@@ -256,7 +266,13 @@ def main():
     tr, va = random_split(ds, [len(ds) - vs, vs], generator=g)
     sc.calibrate([ds.sequences[i][:SEED_LEN + HORIZON] for i in list(tr.indices)[:300]])
 
-    traj = REPO_ROOT / "data" / "attack_trajectories"
+    traj = REPO_ROOT / args.traj_dir
+    if not traj.is_dir():
+        print(f"[abort] no such directory: {traj}")
+        return
+    n_att = len(list(traj.glob("*__attacked.json")))
+    print(f"[data] reading {traj.relative_to(REPO_ROOT)} "
+          f"({n_att} attacked trajectory files)")
     scen = sorted({f.name.split("__")[0] for f in traj.glob("*__attacked.json")})
 
     attacked, paired_benign, excluded = [], [], 0
