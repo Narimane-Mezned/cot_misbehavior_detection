@@ -21,22 +21,28 @@ from src.data_pipeline.deepaccident_loader import (
 )
 from src.eval.metrics import detection_metrics
 
-ATTACKS = ["sensor_spoofing", "fake_emergency", "fake_safety",
-           "traffic_light_tampering", "universal_perturbation", "sybil"]
+SUPPRESSION_ATTACKS = ["sensor_spoofing", "fake_emergency", "fake_safety",
+                       "traffic_light_tampering", "universal_perturbation", "sybil"]
+ACCELERATION_ATTACKS = ["forced_acceleration"]
+ATTACKS = SUPPRESSION_ATTACKS
 SEED_LEN = 10
 HORIZON = 3
 TOPK = 3
 MIN_EFFECT_MS = 1.0
+EFFECT_DIRECTION = "slower"
 SPEED_BANDS = [(0.0, 2.0), (2.0, 4.0), (4.0, 8.0), (8.0, 1e9)]
 
 MEASURES = ["random", "heuristic", "single_step", "total", "speed_shortfall",
-            "lateral_divergence", "heading_change", "combined"]
+            "speed_excess", "speed_deviation", "lateral_divergence",
+            "heading_change", "combined"]
 MAD_SCALE = 1.4826
 LABELS = {"random": "Random",
           "heuristic": "Speed-change heuristic",
           "single_step": "Single-step, 8-feature (as published)",
           "total": "Rollout, total divergence",
           "speed_shortfall": "Rollout, speed shortfall",
+          "speed_excess": "Rollout, speed excess",
+          "speed_deviation": "Rollout, speed deviation",
           "lateral_divergence": "Rollout, lateral divergence",
           "heading_change": "Rollout, heading change",
           "combined": "Rollout, shortfall + lateral"}
@@ -151,8 +157,17 @@ class Scorer:
         im_n = dream_rollout(self.net, s, actual.shape[0])
         total = float(torch.abs(im_n - self._n(actual)).mean().item())
         im = im_n.squeeze(0).cpu().numpy() * self.sd + self.mn
-        sf = float(np.mean(np.maximum(np.linalg.norm(im[:, 2:4], axis=1)
-                                      - np.linalg.norm(actual[:, 2:4], axis=1), 0.0)))
+
+        # The signed speed gap between what the model imagined and what the
+        # agent did. Shortfall keeps only the half where the agent is slower,
+        # which is the half motion-suppression attacks occupy; excess keeps
+        # the other half, for an attack that drives the agent faster than its
+        # own history implies. Neither can see the other's half by
+        # construction, so the sum is the direction-agnostic measure.
+        gap = (np.linalg.norm(im[:, 2:4], axis=1)
+               - np.linalg.norm(actual[:, 2:4], axis=1))
+        sf = float(np.mean(np.maximum(gap, 0.0)))
+        se = float(np.mean(np.maximum(-gap, 0.0)))
 
         # Lateral divergence: how far the observed position sits from the
         # imagined one across the imagined direction of travel. Speed
@@ -174,13 +189,14 @@ class Scorer:
         dyaw = actual[:, 4] - im[:, 4]
         dyaw = (dyaw + np.pi) % (2 * np.pi) - np.pi
         hc = float(np.mean(np.abs(dyaw)))
-        return total, sf, ld, hc
+        return total, sf, se, ld, hc
 
     def all_measures(self, seed, actual, key):
         full = np.concatenate([seed, actual], axis=0)
-        total, sf, ld, hc = self.rollout(seed, actual)
+        total, sf, se, ld, hc = self.rollout(seed, actual)
         return {"single_step": self.single_step(full), "total": total,
-                "speed_shortfall": sf, "lateral_divergence": ld,
+                "speed_shortfall": sf, "speed_excess": se,
+                "speed_deviation": sf + se, "lateral_divergence": ld,
                 "heading_change": hc, "combined": sf + ld,
                 "heuristic": heuristic(full),
                 "random": float(np.random.default_rng(stable_seed(key)).random())}
@@ -192,6 +208,11 @@ def main():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--family", choices=["suppression", "acceleration"],
+                        default="suppression",
+                        help="which attack family to evaluate; this sets both "
+                             "the attack list and the direction of the effect "
+                             "criterion")
     parser.add_argument("--seed", type=int, default=None,
                         help="evaluate a seed-suffixed checkpoint instead of the canonical one")
     parser.add_argument("--horizon", type=int, default=None,
@@ -199,13 +220,24 @@ def main():
     parser.add_argument("--topk", type=int, default=None,
                         help="override the top-K used by single-step scoring")
     args = parser.parse_args()
-    global HORIZON, TOPK
+    global HORIZON, TOPK, ATTACKS, EFFECT_DIRECTION
     if args.horizon is not None:
         HORIZON = args.horizon
     if args.topk is not None:
         TOPK = args.topk
+    if args.family == "acceleration":
+        ATTACKS = ACCELERATION_ATTACKS
+        EFFECT_DIRECTION = "faster"
+        print(f"[setup] family: acceleration -- attacks {ATTACKS}, an agent "
+              f"qualifies if it is at least {MIN_EFFECT_MS} m/s FASTER than "
+              f"its clean replay")
+    else:
+        print(f"[setup] family: suppression -- {len(ATTACKS)} attacks, an "
+              f"agent qualifies if it is at least {MIN_EFFECT_MS} m/s SLOWER "
+              f"than its clean replay")
     model_suffix = f"_seed{args.seed}" if args.seed is not None else ""
-    out_suffix = model_suffix
+    out_suffix = model_suffix + (f"_{args.family}"
+                                 if args.family != "suppression" else "")
     if args.horizon is not None or args.topk is not None:
         out_suffix += f"_h{HORIZON}k{TOPK}"
         print(f"[setup] horizon {HORIZON}, top-K {TOPK}")
@@ -247,7 +279,13 @@ def main():
                     continue
                 sa = mean_speed(ra, tid, t0, HORIZON)
                 scl = mean_speed(rc, tid, t0, HORIZON)
-                if math.isnan(sa) or math.isnan(scl) or (scl - sa) < MIN_EFFECT_MS:
+                # The criterion is directional, because the attack is. A
+                # suppression attack must leave the agent slower than its
+                # clean replay; an acceleration attack must leave it faster.
+                # Applying the suppression form to an acceleration attack
+                # would exclude every sequence for the wrong reason.
+                effect = (scl - sa) if EFFECT_DIRECTION == "slower" else (sa - scl)
+                if math.isnan(sa) or math.isnan(scl) or effect < MIN_EFFECT_MS:
                     excluded += 1
                     continue
                 key = (s, attack, tid)
@@ -263,7 +301,8 @@ def main():
         native.append(sc.all_measures(q[:SEED_LEN], q[SEED_LEN:SEED_LEN + HORIZON], ("native", int(i))))
 
     print(f"[data] {len(attacked)} attacked, {len(paired_benign)} paired clean-replay benign")
-    print(f"[data] {excluded} commanded agents excluded: the attack did not slow them")
+    print(f"[data] {excluded} commanded agents excluded: the attack did not "
+          f"{'slow' if EFFECT_DIRECTION == 'slower' else 'accelerate'} them")
     print(f"[data] {len(native)} native DeepAccident benign sequences\n")
 
     print("=" * 96)
