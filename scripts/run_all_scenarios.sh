@@ -1,12 +1,17 @@
 #!/bin/bash
-N=${1:-10}
+# usage: run_all_scenarios.sh [END] [START]
+#   run_all_scenarios.sh 7        scenarios 0..6   (the original behaviour)
+#   run_all_scenarios.sh 20 7     scenarios 7..19  (continue without redoing
+#                                                   work already recorded)
+END=${1:-10}
+START=${2:-0}
 CARLA_DIR=${CARLA_DIR:-$HOME/CARLA_0.9.15}
 
 rm -f /tmp/failed_scenarios.txt
-echo "recording $N scenario(s), one CARLA session each"
+echo "recording scenario indices $START..$((END-1)), one CARLA session each"
 echo
 
-for i in $(seq 0 $((N-1))); do
+for i in $(seq "$START" $((END-1))); do
   echo "=============================================="
   echo "scenario index $i"
   echo "=============================================="
